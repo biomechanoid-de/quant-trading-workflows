@@ -178,6 +178,12 @@ jobs:
             --domain production \
             --activate \
             wf1_data_ingestion_prod_daily ${{ github.sha }}
+
+          pyflyte launchplan \
+            --project ${{ env.FLYTE_PROJECT }} \
+            --domain production \
+            --activate \
+            wf2_universe_screening_prod_weekly ${{ github.sha }}
       - name: Summary
         run: |
           echo "## Deployed to Production" >> $GITHUB_STEP_SUMMARY

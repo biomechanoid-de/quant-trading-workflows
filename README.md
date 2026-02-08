@@ -11,25 +11,25 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
 
 ```
                         FLYTE WORKFLOW ORCHESTRATION
- ┌──────────────────────────────────────────────────────────────────────┐
- │                                                                      │
- │  WF1: Data Ingestion           (daily, 06:00 UTC)        [Phase 1]  │
- │   └─> Fetch prices -> Validate -> Store to DB -> Quality check      │
- │                                                                      │
- │  WF2: Universe & Screening     (weekly, Sunday)           [Phase 2]  │
- │   └─> Define universe -> Apply filters -> Rank stocks               │
- │                                                                      │
- │  WF3: Signal & Analysis        (weekly, after WF2)        [Phase 2]  │
- │   └─> Technical indicators -> Fundamentals -> Sentiment (Hailo)     │
- │   └─> Combine signals -> Composite scoring                          │
- │                                                                      │
- │  WF4: Portfolio & Rebalancing  (monthly, 1st Monday)      [Phase 3]  │
- │   └─> Target weights -> Transaction costs -> Order report           │
- │                                                                      │
- │  WF5: Monitoring & Reporting   (daily, 18:00 UTC)         [Phase 5]  │
- │   └─> P&L -> Risk metrics -> Grafana dashboard -> Alerts           │
- │                                                                      │
- └──────────────────────────────────────────────────────────────────────┘
+ +----------------------------------------------------------------------+
+ |                                                                      |
+ |  WF1: Data Ingestion           (daily, 06:00 UTC)        [Phase 1]  |
+ |   +-> Fetch prices -> Validate -> Store to DB -> Quality check      |
+ |                                                                      |
+ |  WF2: Universe & Screening     (weekly, Sun 08:00 UTC)   [Phase 2]  |
+ |   +-> Load prices -> Metrics -> Cluster + Score -> Report           |
+ |                                                                      |
+ |  WF3: Signal & Analysis        (weekly, after WF2)        [Phase 2]  |
+ |   +-> Technical indicators -> Fundamentals -> Sentiment (Hailo)     |
+ |   +-> Combine signals -> Composite scoring                          |
+ |                                                                      |
+ |  WF4: Portfolio & Rebalancing  (monthly, 1st Monday)      [Phase 3]  |
+ |   +-> Target weights -> Transaction costs -> Order report           |
+ |                                                                      |
+ |  WF5: Monitoring & Reporting   (daily, 18:00 UTC)         [Phase 5]  |
+ |   +-> P&L -> Risk metrics -> Grafana dashboard -> Alerts           |
+ |                                                                      |
+ +----------------------------------------------------------------------+
 ```
 
 ---
@@ -53,46 +53,49 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
 
 ```
 quant-trading-workflows/
-├── .github/workflows/deploy.yml       # CI/CD: test -> build -> register
-├── Dockerfile                         # ARM64 Python 3.11 container
-├── Makefile                           # Build, test, deploy commands
-├── pyproject.toml                     # Dependencies & project config
-├── sql/
-│   └── schema.sql                     # PostgreSQL schema (5 tables)
-├── src/
-│   ├── shared/                        # Shared across all workflows
-│   │   ├── models.py                  # Data models (MarketDataBatch, Position, ...)
-│   │   ├── config.py                  # Symbols, DB config, MinIO config
-│   │   ├── db.py                      # PostgreSQL connection & helpers
-│   │   └── providers/
-│   │       ├── base.py                # DataProvider ABC (pluggable)
-│   │       └── yfinance_provider.py   # Phase 1: free data via yfinance
-│   ├── wf1_data_ingestion/            # Phase 1: IMPLEMENTED
-│   │   ├── tasks.py                   # fetch, validate, store, quality_check
-│   │   └── workflow.py                # data_ingestion_workflow
-│   ├── wf2_universe_screening/        # Phase 2: stub
-│   ├── wf3_signal_analysis/           # Phase 2: stub
-│   ├── wf4_portfolio_rebalancing/     # Phase 3: stub
-│   └── wf5_monitoring/                # Phase 5: stub
-├── launch_plans/
-│   ├── development.py                 # No schedules (all dev runs manual)
-│   └── production.py                  # WF1 daily 06:00 UTC, 10 symbols
-├── tests/                             # Unit tests (no network/DB required)
-└── scripts/
-    └── run_local.sh                   # Local WF1 testing
++-- .github/workflows/deploy.yml       # CI/CD: test -> build -> register
++-- Dockerfile                         # ARM64 Python 3.11 container
++-- Makefile                           # Build, test, deploy commands
++-- pyproject.toml                     # Dependencies & project config
++-- sql/
+|   +-- schema.sql                     # PostgreSQL schema (7 tables)
++-- src/
+|   +-- shared/                        # Shared across all workflows
+|   |   +-- models.py                  # Data models (MarketDataBatch, StockMetrics, ...)
+|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2 params
+|   |   +-- db.py                      # PostgreSQL helpers (store, query, screening)
+|   |   +-- analytics.py              # Pure computation functions (RSI, Sharpe, ...)
+|   |   +-- providers/
+|   |       +-- base.py                # DataProvider ABC (pluggable)
+|   |       +-- yfinance_provider.py   # Phase 1: free data via yfinance
+|   +-- wf1_data_ingestion/            # Phase 1: IMPLEMENTED
+|   |   +-- tasks.py                   # fetch, validate, store, quality_check
+|   |   +-- workflow.py                # data_ingestion_workflow
+|   +-- wf2_universe_screening/        # Phase 2: IMPLEMENTED
+|   |   +-- tasks.py                   # 9 tasks: load, compute, cluster, score, store, report
+|   |   +-- workflow.py                # universe_screening_workflow
+|   +-- wf3_signal_analysis/           # Phase 2: stub
+|   +-- wf4_portfolio_rebalancing/     # Phase 3: stub
+|   +-- wf5_monitoring/                # Phase 5: stub
++-- launch_plans/
+|   +-- development.py                 # No schedules (all dev runs manual)
+|   +-- production.py                  # WF1 daily 06:00 UTC + WF2 weekly Sun 08:00 UTC
++-- tests/                             # 98 unit tests (no network/DB required)
++-- scripts/
+    +-- run_local.sh                   # Local WF1 testing
 ```
 
 ---
 
 ## Phase 1: Data Ingestion (WF1)
 
-The first workflow is fully implemented and handles the daily market data pipeline.
+The first workflow handles the daily market data pipeline.
 
 ### Pipeline (Dual-Write)
 
 ```
-fetch_market_data ──> validate_ticks ──> ┬─ store_to_database (PostgreSQL) ─┬──> check_data_quality
-   (500m/512Mi)       (200m/256Mi)       └─ store_to_parquet  (MinIO/S3)   ┘      (100m/128Mi)
+fetch_market_data --> validate_ticks --> +- store_to_database (PostgreSQL) -+--> check_data_quality
+   (500m/512Mi)       (200m/256Mi)      +- store_to_parquet  (MinIO/S3)   +      (100m/128Mi)
 ```
 
 **PostgreSQL (Hot Store):** Real-time SQL queries for WF2-WF5 (last 90 days)
@@ -139,13 +142,94 @@ Switching data providers is a **1-line change** in `wf1_data_ingestion/tasks.py`
 
 ---
 
+## Phase 2: Universe & Screening (WF2)
+
+Multi-factor stock screening workflow across 49 stocks spanning all 11 GICS sectors. Runs weekly on Sundays to rank the investable universe.
+
+### Pipeline (9 Tasks, Parallel DAG)
+
+```
+load_historical_prices --> compute_returns_and_metrics --> +- cluster_stocks --------+--> merge_cluster_assignments
+      (500m/512Mi)               (500m/512Mi)             +- score_and_rank_factors -+          (200m/256Mi)
+                                                                                                     |
+                                                                                                     v
+                                                                                        assemble_screening_result
+                                                                                              (500m/512Mi)
+                                                                                                     |
+                                                                               +---------------------+--------------------+
+                                                                               v                     v                    v
+                                                                       store_screening_to_db  store_to_parquet  generate_screening_report
+                                                                         (200m/256Mi)         (200m/256Mi)          (100m/128Mi)
+```
+
+### Multi-Factor Model (Brenndoerfer)
+
+Four factors with Z-score normalization and quintile ranking (Q1=best, Q5=worst):
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| Momentum | 30% | Multi-window returns (10d, 21d, 63d, 126d, 252d) |
+| Low Volatility | 25% | Inverse 252-day annualized volatility |
+| RSI Signal | 20% | Contrarian signal (oversold=bullish, overbought=bearish) |
+| Sharpe Ratio | 25% | Risk-adjusted return quality |
+
+### K-Means Clustering
+
+- Stocks clustered by risk-return characteristics (volatility, returns, Sharpe, drawdown)
+- Elbow method with distance-from-line heuristic to find optimal K (max K=10)
+- Descriptive cluster labels: HiMom-LoVol, LoMom-HiVol, etc.
+- StandardScaler normalization before clustering
+
+### Analytics Functions (`src/shared/analytics.py`)
+
+11 pure computation functions, fully unit-tested, no side effects:
+
+| Function | Description |
+|----------|-------------|
+| `calculate_rsi` | Relative Strength Index (Wilder's smoothing) |
+| `classify_rsi_signal` | Oversold/Neutral/Overbought classification |
+| `compute_cagr` | Compound Annual Growth Rate |
+| `compute_sharpe` | Sharpe ratio (annualized, risk-free rate adjusted) |
+| `compute_sortino` | Sortino ratio (downside deviation only) |
+| `compute_max_drawdown` | Maximum peak-to-trough drawdown |
+| `compute_calmar` | Calmar ratio (CAGR / max drawdown) |
+| `compute_benchmark_performance` | Equal-weight benchmark metrics |
+| `zscore_normalize` | Cross-sectional Z-score normalization |
+| `assign_quintiles` | Quintile ranking (Q1=best) |
+
+### Symbols (Phase 2 -- 49 stocks, 11 GICS sectors)
+
+| Sector | Stocks |
+|--------|--------|
+| Technology (10) | AAPL, MSFT, GOOGL, NVDA, META, AVGO, ADBE, CRM, CSCO, INTC |
+| Consumer Discretionary (5) | AMZN, TSLA, HD, MCD, NKE |
+| Financials (6) | JPM, V, BAC, GS, MS, BLK |
+| Healthcare (5) | JNJ, UNH, PFE, ABT, TMO |
+| Industrials (4) | CAT, HON, UPS, RTX |
+| Consumer Staples (4) | PG, KO, PEP, WMT |
+| Energy (3) | XOM, CVX, COP |
+| Communication Services (3) | NFLX, DIS, CMCSA |
+| Utilities (3) | NEE, DUK, SO |
+| Real Estate (3) | AMT, PLD, CCI |
+| Materials (3) | LIN, APD, SHW |
+
+### Dual-Write Output
+
+- **PostgreSQL:** `screening_runs` (run metadata) + `screening_results` (per-symbol metrics)
+- **MinIO Parquet:** `s3://quant-data/screening/year=YYYY/month=MM/day=DD/screening.parquet`
+- **Text Report:** Full screening summary returned as workflow output
+
+---
+
 ## Database Schema
 
-PostgreSQL on pi5-1tb (NVMe SSD). Five tables:
+PostgreSQL on pi5-1tb (NVMe SSD). Seven tables:
 
 | Table | Workflow | Purpose |
 |-------|----------|---------|
 | `market_data` | WF1 | OHLCV price data with UNIQUE(symbol, date) |
+| `screening_runs` | WF2 | Screening run metadata (benchmark, optimal K) |
+| `screening_results` | WF2 | Per-symbol metrics, scores, quintiles, clusters |
 | `positions` | WF4 | Current portfolio positions |
 | `trades` | WF4 | Executed trades with cost breakdown |
 | `dividends` | WF4 | Dividend tracking and reinvestment |
@@ -201,9 +285,9 @@ make register-prod  # -> quant-trading / production
 Automated via GitHub Actions on the self-hosted runner (Pi cluster):
 
 ```
-Push to development  ──>  test  ──>  build (ARM64)  ──>  register-dev
-Push to main         ──>  test  ──>  build (ARM64)  ──>  register-prod  ──>  activate LPs
-Pull Request         ──>  test only
+Push to development  -->  test  -->  build (ARM64)  -->  register-dev
+Push to main         -->  test  -->  build (ARM64)  -->  register-prod  -->  activate LPs
+Pull Request         -->  test only
 ```
 
 Docker images: `ghcr.io/biomechanoid-de/quant-trading-workflows:{dev|latest|sha}`
@@ -214,8 +298,9 @@ Schedules are controlled exclusively via two files:
 
 | File | Domain | Content |
 |------|--------|---------|
-| `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` — Cron `0 6 * * *` |
-| `launch_plans/development.py` | development | Empty — all dev runs are triggered manually |
+| `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` -- Cron `0 6 * * *` (daily 06:00 UTC) |
+| `launch_plans/production.py` | production | `wf2_universe_screening_prod_weekly` -- Cron `0 8 * * 0` (Sunday 08:00 UTC) |
+| `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
 
@@ -241,6 +326,9 @@ Every step is reproducible, versioned, and traceable via Flyte Console. No "it r
 ### 6. Provider Abstraction: Build First, Decide Later
 All data access goes through `DataProvider` ABC. Phase 1 uses yfinance (free). The paid provider decision comes after Phase 5, based on real operational experience.
 
+### 7. Flytekit Type Safety
+Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` fields) cannot be passed between Flyte tasks -- Flytekit's type engine raises Promise binding errors. Solution: use JSON-serialized `Dict[str, str]` for complex inter-task data, pass individual primitives for configuration, and construct complex objects only inside tasks.
+
 ---
 
 ## Roadmap
@@ -256,18 +344,18 @@ All data access goes through `DataProvider` ABC. Phase 1 uses yfinance (free). T
 
 ---
 
-## Current Status (Phase 1 Complete)
+## Current Status (Phase 2 In Progress)
 
 | Component | Status |
 |-----------|--------|
-| WF1: Data Ingestion (5 tasks, dual-write) | ✅ Running daily at 06:00 UTC |
-| WF2-WF5 Stubs | ✅ Registered, ready for Phase 2-5 |
-| Historical Backfill | ✅ 26 trading days (Jan 1 - Feb 8, 2026) |
-| CI/CD Pipeline | ✅ 18+ successful runs |
-| Launch Plan Management | ✅ Explicit activation via `pyflyte launchplan` |
-| Flyte Domains | ✅ Only development + production (staging removed) |
-| Unit Tests | ✅ 33 tests, 90% coverage |
-| Helm Revision | 16 |
+| WF1: Data Ingestion (5 tasks, dual-write) | Running daily at 06:00 UTC |
+| WF2: Universe & Screening (9 tasks, parallel DAG) | Running weekly Sun 08:00 UTC |
+| WF3-WF5 Stubs | Registered, ready for Phase 2-5 |
+| Historical Backfill | 26 trading days (Jan 1 - Feb 8, 2026) |
+| CI/CD Pipeline | 20+ successful runs |
+| Launch Plan Management | Explicit activation via `pyflyte launchplan` |
+| Flyte Domains | Only development + production (staging removed) |
+| Unit Tests | 98 tests, 92% coverage |
 
 ## Related Repositories
 
@@ -283,7 +371,7 @@ All data access goes through `DataProvider` ABC. Phase 1 uses yfinance (free). T
 | Workflow | Node | CPU Request | Memory Request | Why |
 |----------|------|-------------|----------------|-----|
 | WF1: Data Ingestion | Pi 4 Workers | 100-500m | 128-512Mi | I/O-bound (API calls) |
-| WF2: Universe Screening | Pi 4 Workers | TBD | TBD | CPU-bound, moderate |
+| WF2: Universe Screening | Pi 4 Workers | 100-500m | 128-512Mi | CPU-bound (analytics, K-Means) |
 | WF3: Signal (Tech+Fund) | Pi 4 Workers | TBD | TBD | CPU-bound, parallelizable |
 | WF3: Sentiment | **Pi 5 AI (Hailo)** | TBD | TBD | NPU for ML inference |
 | WF4: Portfolio | Pi 4 Workers | TBD | TBD | CPU-bound, moderate |
