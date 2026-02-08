@@ -328,18 +328,28 @@ class TestComputeReturnsAndMetrics:
 
     def test_produces_metrics(self, sample_price_data, sample_screening_config):
         """Should produce StockMetrics for each symbol with sufficient data."""
+        cfg = sample_screening_config
         metrics = compute_returns_and_metrics(
             price_data=sample_price_data,
-            config=sample_screening_config,
+            forecast_horizon=cfg.forecast_horizon,
+            momentum_windows=cfg.momentum_windows,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
         )
         assert len(metrics) > 0
         assert all(isinstance(m, StockMetrics) for m in metrics)
 
     def test_has_rsi(self, sample_price_data, sample_screening_config):
         """Each stock should have RSI between 0 and 100."""
+        cfg = sample_screening_config
         metrics = compute_returns_and_metrics(
             price_data=sample_price_data,
-            config=sample_screening_config,
+            forecast_horizon=cfg.forecast_horizon,
+            momentum_windows=cfg.momentum_windows,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
         )
         for m in metrics:
             assert 0 <= m.rsi <= 100
@@ -347,9 +357,14 @@ class TestComputeReturnsAndMetrics:
 
     def test_has_momentum(self, sample_price_data, sample_screening_config):
         """Each stock should have momentum returns for configured windows."""
+        cfg = sample_screening_config
         metrics = compute_returns_and_metrics(
             price_data=sample_price_data,
-            config=sample_screening_config,
+            forecast_horizon=cfg.forecast_horizon,
+            momentum_windows=cfg.momentum_windows,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
         )
         for m in metrics:
             assert len(m.momentum_returns) > 0
@@ -358,9 +373,14 @@ class TestComputeReturnsAndMetrics:
 
     def test_has_performance_metrics(self, sample_price_data, sample_screening_config):
         """Each stock should have CAGR, Sharpe, Sortino, etc."""
+        cfg = sample_screening_config
         metrics = compute_returns_and_metrics(
             price_data=sample_price_data,
-            config=sample_screening_config,
+            forecast_horizon=cfg.forecast_horizon,
+            momentum_windows=cfg.momentum_windows,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
         )
         for m in metrics:
             assert isinstance(m.cagr, float)
@@ -372,20 +392,30 @@ class TestComputeReturnsAndMetrics:
     def test_skips_insufficient_data(self, sample_screening_config):
         """Symbols with too few data points are skipped."""
         import json
+        cfg = sample_screening_config
         sparse_data = {
             "AAPL": json.dumps([["2026-01-01", 190.0], ["2026-01-02", 191.0]]),  # Only 2 days
         }
         metrics = compute_returns_and_metrics(
             price_data=sparse_data,
-            config=sample_screening_config,
+            forecast_horizon=cfg.forecast_horizon,
+            momentum_windows=cfg.momentum_windows,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
         )
         assert len(metrics) == 0
 
     def test_empty_price_data(self, sample_screening_config):
         """Empty price data -> empty metrics list."""
+        cfg = sample_screening_config
         metrics = compute_returns_and_metrics(
             price_data={},
-            config=sample_screening_config,
+            forecast_horizon=cfg.forecast_horizon,
+            momentum_windows=cfg.momentum_windows,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
         )
         assert metrics == []
 
@@ -579,11 +609,18 @@ class TestAssembleScreeningResult:
 
     def test_assembles_result(self, sample_stock_metrics, sample_price_data, sample_screening_config):
         """Should produce a valid ScreeningResult."""
+        cfg = sample_screening_config
         result = assemble_screening_result(
             run_date="2026-02-08",
-            config=sample_screening_config,
             final_metrics=sample_stock_metrics,
             price_data=sample_price_data,
+            symbols=cfg.symbols,
+            lookback_days=cfg.lookback_days,
+            forecast_horizon=cfg.forecast_horizon,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
+            kmeans_max_k=cfg.kmeans_max_k,
         )
         assert isinstance(result, ScreeningResult)
         assert result.run_date == "2026-02-08"
@@ -592,11 +629,18 @@ class TestAssembleScreeningResult:
 
     def test_benchmark_computed(self, sample_stock_metrics, sample_price_data, sample_screening_config):
         """Benchmark CAGR and Sharpe should be computed."""
+        cfg = sample_screening_config
         result = assemble_screening_result(
             run_date="2026-02-08",
-            config=sample_screening_config,
             final_metrics=sample_stock_metrics,
             price_data=sample_price_data,
+            symbols=cfg.symbols,
+            lookback_days=cfg.lookback_days,
+            forecast_horizon=cfg.forecast_horizon,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
+            kmeans_max_k=cfg.kmeans_max_k,
         )
         # With 40 days of data, benchmark should have non-zero values
         assert isinstance(result.benchmark_cagr, float)
@@ -604,22 +648,36 @@ class TestAssembleScreeningResult:
 
     def test_auto_date(self, sample_stock_metrics, sample_price_data, sample_screening_config):
         """Empty run_date should default to today."""
+        cfg = sample_screening_config
         result = assemble_screening_result(
             run_date="",
-            config=sample_screening_config,
             final_metrics=sample_stock_metrics,
             price_data=sample_price_data,
+            symbols=cfg.symbols,
+            lookback_days=cfg.lookback_days,
+            forecast_horizon=cfg.forecast_horizon,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
+            kmeans_max_k=cfg.kmeans_max_k,
         )
         assert result.run_date != ""
         assert len(result.run_date) == 10  # YYYY-MM-DD
 
     def test_empty_price_data(self, sample_stock_metrics, sample_screening_config):
         """Empty price data -> zero benchmark metrics."""
+        cfg = sample_screening_config
         result = assemble_screening_result(
             run_date="2026-02-08",
-            config=sample_screening_config,
             final_metrics=sample_stock_metrics,
             price_data={},
+            symbols=cfg.symbols,
+            lookback_days=cfg.lookback_days,
+            forecast_horizon=cfg.forecast_horizon,
+            rsi_window=cfg.rsi_window,
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
+            kmeans_max_k=cfg.kmeans_max_k,
         )
         assert result.benchmark_cagr == 0.0
         assert result.benchmark_sharpe == 0.0
