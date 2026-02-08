@@ -24,9 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy entire project
 COPY . /root
 
-# Install dependencies from pyproject.toml
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+# Install uv for fast dependency resolution, then install project
+RUN pip install --no-cache-dir --upgrade pip uv && \
+    uv pip install --system --no-cache .
 
 # Clean up build dependencies
 RUN apt-get purge -y --auto-remove build-essential gcc
