@@ -5,7 +5,7 @@ CI/CD registers this file to the production domain on push to main.
 If no launch plans are defined here, only the default (manual) launch plans exist.
 
 Current schedules:
-- WF1 Data Ingestion: Daily at 06:00 UTC (before European market open)
+- WF1 Data Ingestion: Daily at 06:00 UTC (all 10 Phase 1 symbols, before EU market open)
 """
 
 from flytekit import CronSchedule, LaunchPlan
