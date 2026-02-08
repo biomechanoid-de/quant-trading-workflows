@@ -111,6 +111,9 @@ jobs:
             container: flyte
           EOF
 
+          # Register all workflows + launch plans to development
+          # Note: production.py defines wf1_prod_daily schedule but it won't auto-activate
+          # Only launch_plans/development.py schedules are relevant here (currently none)
           pyflyte register . \
             --project ${{ env.FLYTE_PROJECT }} \
             --domain development \
@@ -161,11 +164,14 @@ jobs:
             container: flyte
           EOF
 
+          # Register all workflows + launch plans to production
+          # --activate-launchplans auto-activates wf1_data_ingestion_prod_daily schedule
           pyflyte register . \
             --project ${{ env.FLYTE_PROJECT }} \
             --domain production \
             --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            --version ${{ github.sha }}
+            --version ${{ github.sha }} \
+            --activate-launchplans
       - name: Summary
         run: |
           echo "## Deployed to Production" >> $GITHUB_STEP_SUMMARY
