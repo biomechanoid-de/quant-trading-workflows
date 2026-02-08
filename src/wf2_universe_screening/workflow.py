@@ -11,23 +11,24 @@ Weekly pipeline that screens stocks via multi-factor model:
 Schedule: Weekly Sunday 08:00 UTC (configured in launch_plans/)
 
 Task DAG:
-    load_historical_prices -> compute_returns_and_metrics -> ┬─ cluster_stocks        ─┐
-                                                             └─ score_and_rank_factors ─┘
-                                                                                        v
-                                                                 merge_cluster_assignments
-                                                                          |
-                                                          assemble_screening_result
-                                                                          |
-                                              ┌───────────────────────────┼──────────────┐
-                                              v                           v              v
-                                        store_to_db              store_to_parquet   generate_report
+    build_config ──────────────────────────────────────────────────────────────┐
+    load_historical_prices -> compute_returns_and_metrics -> ┬─ cluster_stocks ┤
+                                                             └─ score_and_rank ┘
+                                                                               v
+                                                          merge_cluster_assignments
+                                                                     |
+                                                     assemble_screening_result
+                                                                     |
+                                          ┌──────────────────────────┼──────────────┐
+                                          v                          v              v
+                                    store_to_db             store_to_parquet   generate_report
 
 Example local run:
     pyflyte run src/wf2_universe_screening/workflow.py universe_screening_workflow \\
         --symbols '["AAPL", "MSFT", "GOOGL"]' --lookback_days 30 --run_date 2026-02-08
 """
 
-from typing import List
+from typing import Dict, List
 
 from flytekit import workflow
 
@@ -37,12 +38,12 @@ from src.shared.config import (
     WF2_RSI_WINDOW,
     WF2_RSI_OVERSOLD,
     WF2_RSI_OVERBOUGHT,
-    WF2_MOMENTUM_WINDOWS,
     WF2_FORECAST_HORIZON,
     WF2_KMEANS_MAX_K,
 )
 from src.shared.models import ScreeningConfig, ScreeningResult
 from src.wf2_universe_screening.tasks import (
+    build_screening_config,
     load_historical_prices,
     compute_returns_and_metrics,
     cluster_stocks,
@@ -53,6 +54,14 @@ from src.wf2_universe_screening.tasks import (
     store_screening_to_parquet,
     generate_screening_report,
 )
+
+# Default factor weights (constant, not a workflow parameter to keep interface simple)
+_FACTOR_WEIGHTS: Dict[str, float] = {
+    "momentum": 0.30,
+    "low_volatility": 0.25,
+    "rsi_signal": 0.20,
+    "sharpe": 0.25,
+}
 
 
 @workflow
@@ -77,22 +86,16 @@ def universe_screening_workflow(
     Returns:
         Screening report as formatted string.
     """
-    # Build config from parameters
-    config = ScreeningConfig(
+    # Step 0: Build config inside a task (Flytekit can't construct
+    # dataclasses from Promise objects in workflow scope)
+    config = build_screening_config(
         symbols=symbols,
         lookback_days=lookback_days,
         forecast_horizon=WF2_FORECAST_HORIZON,
-        momentum_windows=WF2_MOMENTUM_WINDOWS,
         rsi_window=WF2_RSI_WINDOW,
         rsi_oversold=WF2_RSI_OVERSOLD,
         rsi_overbought=WF2_RSI_OVERBOUGHT,
         kmeans_max_k=WF2_KMEANS_MAX_K,
-        factor_weights={
-            "momentum": 0.30,
-            "low_volatility": 0.25,
-            "rsi_signal": 0.20,
-            "sharpe": 0.25,
-        },
     )
 
     # Step 1: Load historical prices from PostgreSQL
@@ -111,11 +114,11 @@ def universe_screening_workflow(
     # Flyte executes these in parallel (no dependency between them)
     cluster_assignments = cluster_stocks(
         stock_metrics=stock_metrics,
-        max_k=config.kmeans_max_k,
+        max_k=WF2_KMEANS_MAX_K,
     )
     ranked_metrics = score_and_rank_factors(
         stock_metrics=stock_metrics,
-        factor_weights=config.factor_weights,
+        factor_weights=_FACTOR_WEIGHTS,
     )
 
     # Step 4: Merge cluster assignments into ranked metrics

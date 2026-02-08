@@ -27,6 +27,57 @@ from src.shared.models import ScreeningConfig, ScreeningResult, StockMetrics
 
 
 @task(
+    requests=Resources(cpu="100m", mem="128Mi"),
+    limits=Resources(cpu="200m", mem="256Mi"),
+)
+def build_screening_config(
+    symbols: List[str],
+    lookback_days: int,
+    forecast_horizon: int,
+    rsi_window: int,
+    rsi_oversold: int,
+    rsi_overbought: int,
+    kmeans_max_k: int,
+) -> ScreeningConfig:
+    """Build ScreeningConfig from workflow parameters.
+
+    Flytekit workflows cannot construct dataclasses from Promise objects
+    inline (symbols is a Promise, not a real list). This task materializes
+    the values and constructs the config.
+
+    Args:
+        symbols: Stock symbols to screen.
+        lookback_days: Historical data lookback.
+        forecast_horizon: Forward return horizon.
+        rsi_window: RSI lookback window.
+        rsi_oversold: RSI oversold threshold.
+        rsi_overbought: RSI overbought threshold.
+        kmeans_max_k: Maximum K for K-Means.
+
+    Returns:
+        ScreeningConfig dataclass with all parameters set.
+    """
+    from src.shared.config import WF2_MOMENTUM_WINDOWS
+
+    return ScreeningConfig(
+        symbols=symbols,
+        lookback_days=lookback_days,
+        forecast_horizon=forecast_horizon,
+        momentum_windows=WF2_MOMENTUM_WINDOWS,
+        rsi_window=rsi_window,
+        rsi_oversold=rsi_oversold,
+        rsi_overbought=rsi_overbought,
+        kmeans_max_k=kmeans_max_k,
+        factor_weights={
+            "momentum": 0.30,
+            "low_volatility": 0.25,
+            "rsi_signal": 0.20,
+            "sharpe": 0.25,
+        },
+    )
+
+
+@task(
     requests=Resources(cpu="500m", mem="512Mi"),
     limits=Resources(cpu="1000m", mem="1024Mi"),
 )
