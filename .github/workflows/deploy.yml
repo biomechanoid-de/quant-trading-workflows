@@ -165,13 +165,19 @@ jobs:
           EOF
 
           # Register all workflows + launch plans to production
-          # --activate-launchplans auto-activates wf1_data_ingestion_prod_daily schedule
           pyflyte register . \
             --project ${{ env.FLYTE_PROJECT }} \
             --domain production \
             --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            --version ${{ github.sha }} \
-            --activate-launchplans
+            --version ${{ github.sha }}
+      - name: Activate scheduled launch plans
+        run: |
+          # Activate only the cron-scheduled launch plans (not all default LPs)
+          pyflyte launchplan \
+            --project ${{ env.FLYTE_PROJECT }} \
+            --domain production \
+            --activate \
+            wf1_data_ingestion_prod_daily ${{ github.sha }}
       - name: Summary
         run: |
           echo "## Deployed to Production" >> $GITHUB_STEP_SUMMARY
