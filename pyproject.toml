@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "quant-trading-workflows"
 version = "0.1.0"
 description = "Quant Trading Workflows for Pi Cluster - Flyte-orchestrated trading system inspired by Norwegian Government Pension Fund"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "flytekit>=1.13.0",
     "pandas>=2.0.0",
@@ -14,6 +14,8 @@ dependencies = [
     "yfinance>=0.2.0",
     "psycopg2-binary>=2.9.0",
     "numpy>=1.24.0",
+    "pyarrow>=14.0.0",
+    "boto3>=1.34.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["src*", "launch_plans*"]
+
+[tool.poetry]
+package-mode = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

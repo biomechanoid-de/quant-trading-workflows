@@ -1,12 +1,13 @@
 """WF1: Data Ingestion Pipeline - Tasks.
 
 Daily pipeline that fetches EOD market data, validates it,
-stores it to PostgreSQL, and generates a quality report.
+stores it to PostgreSQL + Parquet (MinIO), and generates a quality report.
 
 Schedule: Daily 06:00 UTC (before European market open)
 Node: Any Pi 4 Worker
 
-Task chain: fetch_market_data -> validate_ticks -> store_to_database -> check_data_quality
+Task chain: fetch_market_data -> validate_ticks -> [store_to_database, store_to_parquet] -> check_data_quality
+Dual-write: PostgreSQL (hot data, fast queries) + Parquet on MinIO (cold data, bulk analysis)
 """
 
 from typing import List
@@ -122,6 +123,33 @@ def store_to_database(batch: MarketDataBatch) -> str:
 
     rows = store_market_data(batch)
     return f"Stored {rows} rows for {batch.date}"
+
+
+@task(
+    requests=Resources(cpu="200m", mem="256Mi"),
+    limits=Resources(cpu="500m", mem="512Mi"),
+)
+def store_to_parquet(batch: MarketDataBatch) -> str:
+    """Store validated market data as Parquet to MinIO/S3 (Data Lake).
+
+    Writes to Hive-style partitioned path:
+        s3://quant-data/market_data/source=yfinance/year=YYYY/month=MM/day=DD/market_data.parquet
+
+    This runs IN PARALLEL with store_to_database (dual-write pattern):
+    - PostgreSQL: Hot data for WF2-WF5 real-time queries
+    - Parquet/MinIO: Cold data for backtesting, ML training, archive
+
+    Overwrites existing file for the same partition (idempotent).
+
+    Args:
+        batch: Validated MarketDataBatch.
+
+    Returns:
+        Summary string with S3 path and row count.
+    """
+    from src.shared.storage import store_parquet_to_s3
+
+    return store_parquet_to_s3(batch)
 
 
 @task(

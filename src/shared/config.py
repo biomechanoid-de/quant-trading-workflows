@@ -42,11 +42,17 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD", "flyte")
 # ============================================================
 # MinIO Configuration (S3-compatible on pi5-1tb)
 # ============================================================
+# In-cluster: minio.flyte.svc.cluster.local:9000
+# External:   192.168.178.45:30900
 
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://192.168.178.45:30900")
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://minio.flyte.svc.cluster.local:9000")
+MINIO_EXTERNAL_ENDPOINT = os.environ.get("MINIO_EXTERNAL_ENDPOINT", "http://192.168.178.45:30900")
 MINIO_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID", "minio")
 MINIO_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "miniostorage")
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "quant-trading")
+
+# S3 Parquet Storage (Data Lake on MinIO)
+S3_DATA_BUCKET = os.environ.get("S3_DATA_BUCKET", "quant-data")
 
 # ============================================================
 # Data Provider
