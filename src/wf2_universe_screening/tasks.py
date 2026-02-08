@@ -27,57 +27,6 @@ from src.shared.models import ScreeningConfig, ScreeningResult, StockMetrics
 
 
 @task(
-    requests=Resources(cpu="100m", mem="128Mi"),
-    limits=Resources(cpu="200m", mem="256Mi"),
-)
-def build_screening_config(
-    symbols: List[str],
-    lookback_days: int,
-    forecast_horizon: int,
-    rsi_window: int,
-    rsi_oversold: int,
-    rsi_overbought: int,
-    kmeans_max_k: int,
-) -> ScreeningConfig:
-    """Build ScreeningConfig from workflow parameters.
-
-    Flytekit workflows cannot construct dataclasses from Promise objects
-    inline (symbols is a Promise, not a real list). This task materializes
-    the values and constructs the config.
-
-    Args:
-        symbols: Stock symbols to screen.
-        lookback_days: Historical data lookback.
-        forecast_horizon: Forward return horizon.
-        rsi_window: RSI lookback window.
-        rsi_oversold: RSI oversold threshold.
-        rsi_overbought: RSI overbought threshold.
-        kmeans_max_k: Maximum K for K-Means.
-
-    Returns:
-        ScreeningConfig dataclass with all parameters set.
-    """
-    from src.shared.config import WF2_MOMENTUM_WINDOWS
-
-    return ScreeningConfig(
-        symbols=symbols,
-        lookback_days=lookback_days,
-        forecast_horizon=forecast_horizon,
-        momentum_windows=WF2_MOMENTUM_WINDOWS,
-        rsi_window=rsi_window,
-        rsi_oversold=rsi_oversold,
-        rsi_overbought=rsi_overbought,
-        kmeans_max_k=kmeans_max_k,
-        factor_weights={
-            "momentum": 0.30,
-            "low_volatility": 0.25,
-            "rsi_signal": 0.20,
-            "sharpe": 0.25,
-        },
-    )
-
-
-@task(
     requests=Resources(cpu="500m", mem="512Mi"),
     limits=Resources(cpu="1000m", mem="1024Mi"),
 )
@@ -117,12 +66,16 @@ def load_historical_prices(
 
 
 @task(
-    requests=Resources(cpu="1000m", mem="1024Mi"),
-    limits=Resources(cpu="2000m", mem="2048Mi"),
+    requests=Resources(cpu="500m", mem="512Mi"),
+    limits=Resources(cpu="1000m", mem="1024Mi"),
 )
 def compute_returns_and_metrics(
     price_data: Dict[str, str],
-    config: ScreeningConfig,
+    forecast_horizon: int,
+    momentum_windows: List[int],
+    rsi_window: int,
+    rsi_oversold: int,
+    rsi_overbought: int,
 ) -> List[StockMetrics]:
     """Compute returns, RSI, and performance metrics for each stock.
 
@@ -133,10 +86,18 @@ def compute_returns_and_metrics(
     4. Compute performance: CAGR, Sharpe, Sortino, Calmar, Max Drawdown
     5. Compute annualized volatility
 
+    Accepts individual parameters instead of ScreeningConfig to avoid
+    Flytekit serialization issues with dataclasses containing List/Dict
+    fields ("Promise objects are not iterable" during pyflyte register).
+
     Args:
         price_data: Dict[symbol -> JSON string of [[date, close], ...]]
             from load_historical_prices.
-        config: ScreeningConfig with momentum_windows, rsi_window, etc.
+        forecast_horizon: Forward return horizon (trading days).
+        momentum_windows: List of momentum window sizes (e.g. [10, 21, 63]).
+        rsi_window: RSI lookback window.
+        rsi_oversold: RSI oversold threshold.
+        rsi_overbought: RSI overbought threshold.
 
     Returns:
         List of StockMetrics (one per symbol with sufficient data).
@@ -157,8 +118,8 @@ def compute_returns_and_metrics(
 
     # Minimum data points needed
     min_required = max(
-        config.rsi_window + 1,
-        min(config.momentum_windows) + 1 if config.momentum_windows else 11,
+        rsi_window + 1,
+        min(momentum_windows) + 1 if momentum_windows else 11,
         30,
     )
 
@@ -181,8 +142,8 @@ def compute_returns_and_metrics(
             continue
 
         # Forward return (latest available)
-        forward_ret = price_series.pct_change(config.forecast_horizon).shift(
-            -config.forecast_horizon
+        forward_ret = price_series.pct_change(forecast_horizon).shift(
+            -forecast_horizon
         )
         latest_forward = (
             float(forward_ret.dropna().iloc[-1])
@@ -192,7 +153,7 @@ def compute_returns_and_metrics(
 
         # Momentum returns for each window
         momentum_rets: Dict[str, float] = {}
-        for window in config.momentum_windows:
+        for window in momentum_windows:
             if len(price_series) > window:
                 mom = price_series.pct_change(window)
                 latest_mom = (
@@ -203,14 +164,14 @@ def compute_returns_and_metrics(
                 momentum_rets[f"{window}d"] = round(latest_mom, 6)
 
         # RSI
-        rsi_series = calculate_rsi(daily_returns, window=config.rsi_window)
+        rsi_series = calculate_rsi(daily_returns, window=rsi_window)
         latest_rsi = (
             float(rsi_series.dropna().iloc[-1])
             if not rsi_series.dropna().empty
             else 50.0
         )
         rsi_signal = classify_rsi_signal(
-            latest_rsi, config.rsi_oversold, config.rsi_overbought
+            latest_rsi, rsi_oversold, rsi_overbought
         )
 
         # Volatility (annualized)
@@ -533,20 +494,35 @@ def merge_cluster_assignments(
 )
 def assemble_screening_result(
     run_date: str,
-    config: ScreeningConfig,
     final_metrics: List[StockMetrics],
     price_data: Dict[str, str],
+    symbols: List[str],
+    lookback_days: int,
+    forecast_horizon: int,
+    rsi_window: int,
+    rsi_oversold: int,
+    rsi_overbought: int,
+    kmeans_max_k: int,
 ) -> ScreeningResult:
     """Assemble the final ScreeningResult with benchmark performance.
 
     Computes equal-weight benchmark from price_data and packages
-    everything into a single ScreeningResult dataclass.
+    everything into a single ScreeningResult dataclass. Constructs
+    ScreeningConfig internally from individual parameters to avoid
+    Flytekit serialization issues with dataclasses containing List/Dict
+    fields ("Promise objects are not iterable" during pyflyte register).
 
     Args:
         run_date: Screening date (YYYY-MM-DD). Empty string = today.
-        config: ScreeningConfig used for this run.
         final_metrics: Fully populated StockMetrics list.
         price_data: Raw price data dict (JSON-encoded) for benchmark computation.
+        symbols: Stock symbols that were screened.
+        lookback_days: Historical data lookback (calendar days).
+        forecast_horizon: Forward return horizon (trading days).
+        rsi_window: RSI lookback window.
+        rsi_oversold: RSI oversold threshold.
+        rsi_overbought: RSI overbought threshold.
+        kmeans_max_k: Maximum K for K-Means.
 
     Returns:
         Complete ScreeningResult ready for storage and reporting.
@@ -555,9 +531,28 @@ def assemble_screening_result(
     import pandas as pd
     from datetime import datetime
     from src.shared.analytics import compute_benchmark_performance
+    from src.shared.config import WF2_MOMENTUM_WINDOWS
 
     if not run_date:
         run_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Construct the config inside the task (never passed between tasks)
+    config = ScreeningConfig(
+        symbols=symbols,
+        lookback_days=lookback_days,
+        forecast_horizon=forecast_horizon,
+        momentum_windows=WF2_MOMENTUM_WINDOWS,
+        rsi_window=rsi_window,
+        rsi_oversold=rsi_oversold,
+        rsi_overbought=rsi_overbought,
+        kmeans_max_k=kmeans_max_k,
+        factor_weights={
+            "momentum": 0.30,
+            "low_volatility": 0.25,
+            "rsi_signal": 0.20,
+            "sharpe": 0.25,
+        },
+    )
 
     # Build prices DataFrame for benchmark
     frames = {}
