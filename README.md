@@ -75,7 +75,7 @@ quant-trading-workflows/
 │   ├── wf4_portfolio_rebalancing/     # Phase 3: stub
 │   └── wf5_monitoring/                # Phase 5: stub
 ├── launch_plans/
-│   ├── development.py                 # WF1 every 6h, 3 test symbols
+│   ├── development.py                 # No schedules (all dev runs manual)
 │   └── production.py                  # WF1 daily 06:00 UTC, 10 symbols
 ├── tests/                             # Unit tests (no network/DB required)
 └── scripts/
@@ -88,11 +88,17 @@ quant-trading-workflows/
 
 The first workflow is fully implemented and handles the daily market data pipeline.
 
-### Pipeline
+### Pipeline (Dual-Write)
 
 ```
-fetch_market_data ──> validate_ticks ──> store_to_database ──> check_data_quality
-   (500m/512Mi)       (200m/256Mi)       (200m/256Mi)          (100m/128Mi)
+fetch_market_data ──> validate_ticks ──> ┬─ store_to_database (PostgreSQL) ─┬──> check_data_quality
+   (500m/512Mi)       (200m/256Mi)       └─ store_to_parquet  (MinIO/S3)   ┘      (100m/128Mi)
+```
+
+**PostgreSQL (Hot Store):** Real-time SQL queries for WF2-WF5 (last 90 days)
+**MinIO Parquet (Cold Store):** Hive-partitioned for backtesting, ML, archival:
+```
+s3://quant-data/market_data/source=yfinance/year=2026/month=02/day=08/market_data.parquet
 ```
 
 ### Symbols (Phase 1)
@@ -196,11 +202,22 @@ Automated via GitHub Actions on the self-hosted runner (Pi cluster):
 
 ```
 Push to development  ──>  test  ──>  build (ARM64)  ──>  register-dev
-Push to main         ──>  test  ──>  build (ARM64)  ──>  register-prod
+Push to main         ──>  test  ──>  build (ARM64)  ──>  register-prod  ──>  activate LPs
 Pull Request         ──>  test only
 ```
 
 Docker images: `ghcr.io/biomechanoid-de/quant-trading-workflows:{dev|latest|sha}`
+
+### Launch Plan Management
+
+Schedules are controlled exclusively via two files:
+
+| File | Domain | Content |
+|------|--------|---------|
+| `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` — Cron `0 6 * * *` |
+| `launch_plans/development.py` | development | Empty — all dev runs are triggered manually |
+
+CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
 
 ---
 
@@ -239,6 +256,19 @@ All data access goes through `DataProvider` ABC. Phase 1 uses yfinance (free). T
 
 ---
 
+## Current Status (Phase 1 Complete)
+
+| Component | Status |
+|-----------|--------|
+| WF1: Data Ingestion (5 tasks, dual-write) | ✅ Running daily at 06:00 UTC |
+| WF2-WF5 Stubs | ✅ Registered, ready for Phase 2-5 |
+| Historical Backfill | ✅ 26 trading days (Jan 1 - Feb 8, 2026) |
+| CI/CD Pipeline | ✅ 18+ successful runs |
+| Launch Plan Management | ✅ Explicit activation via `pyflyte launchplan` |
+| Flyte Domains | ✅ Only development + production (staging removed) |
+| Unit Tests | ✅ 33 tests, 90% coverage |
+| Helm Revision | 16 |
+
 ## Related Repositories
 
 | Repository | Purpose |
@@ -259,6 +289,6 @@ All data access goes through `DataProvider` ABC. Phase 1 uses yfinance (free). T
 | WF4: Portfolio | Pi 4 Workers | TBD | TBD | CPU-bound, moderate |
 | WF5: Monitoring | Pi 4 Workers | TBD | TBD | Lightweight |
 
-Flyte namespaces:
+Flyte domains (staging permanently removed):
 - `quant-trading-development`: 2 CPU, 2 Gi, 10 pods max
 - `quant-trading-production`: 4 CPU, 6 Gi, 20 pods max

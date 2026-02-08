@@ -24,6 +24,34 @@ PHASE1_SYMBOLS = [
     "JNJ",    # Johnson & Johnson
 ]
 
+# Phase 2: ~50 US Large + Mid Caps for universe screening
+# Spans all 11 GICS sectors for diversification analysis
+PHASE2_SYMBOLS = [
+    # Technology (10)
+    "AAPL", "MSFT", "GOOGL", "NVDA", "META",
+    "AVGO", "ADBE", "CRM", "CSCO", "INTC",
+    # Consumer Discretionary (5)
+    "AMZN", "TSLA", "HD", "MCD", "NKE",
+    # Financials (6)
+    "JPM", "V", "BAC", "GS", "MS", "BLK",
+    # Healthcare (5)
+    "JNJ", "UNH", "PFE", "ABT", "TMO",
+    # Industrials (4)
+    "CAT", "HON", "UPS", "RTX",
+    # Consumer Staples (4)
+    "PG", "KO", "PEP", "WMT",
+    # Energy (3)
+    "XOM", "CVX", "COP",
+    # Communication Services (3)
+    "NFLX", "DIS", "CMCSA",
+    # Utilities (3)
+    "NEE", "DUK", "SO",
+    # Real Estate (3)
+    "AMT", "PLD", "CCI",
+    # Materials (3)
+    "LIN", "APD", "SHW",
+]
+
 # Development: Small subset for fast testing
 DEV_SYMBOLS = ["AAPL", "MSFT", "GOOGL"]
 
@@ -59,3 +87,15 @@ S3_DATA_BUCKET = os.environ.get("S3_DATA_BUCKET", "quant-data")
 # ============================================================
 
 DATA_PROVIDER = os.environ.get("DATA_PROVIDER", "yfinance")
+
+# ============================================================
+# WF2: Universe Screening Defaults
+# ============================================================
+
+WF2_LOOKBACK_DAYS = int(os.environ.get("WF2_LOOKBACK_DAYS", "252"))
+WF2_RSI_WINDOW = int(os.environ.get("WF2_RSI_WINDOW", "14"))
+WF2_RSI_OVERSOLD = int(os.environ.get("WF2_RSI_OVERSOLD", "30"))
+WF2_RSI_OVERBOUGHT = int(os.environ.get("WF2_RSI_OVERBOUGHT", "70"))
+WF2_MOMENTUM_WINDOWS = [10, 21, 63, 126, 252]  # 2w, 1m, 3m, 6m, 1y in trading days
+WF2_FORECAST_HORIZON = int(os.environ.get("WF2_FORECAST_HORIZON", "21"))  # 1 month forward
+WF2_KMEANS_MAX_K = int(os.environ.get("WF2_KMEANS_MAX_K", "10"))

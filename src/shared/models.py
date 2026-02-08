@@ -29,6 +29,82 @@ class MarketDataBatch:
 
 
 # ============================================================
+# WF2: Universe & Screening
+# ============================================================
+
+@dataclass
+class ScreeningConfig:
+    """Configuration for a screening run.
+
+    Passed as input to universe_screening_workflow.
+    All parameters have defaults from config.py / environment variables.
+    """
+    symbols: List[str] = field(default_factory=list)
+    lookback_days: int = 252
+    forecast_horizon: int = 21                  # Forward return horizon (trading days)
+    momentum_windows: List[int] = field(default_factory=lambda: [10, 21, 63, 126, 252])
+    rsi_window: int = 14
+    rsi_oversold: int = 30
+    rsi_overbought: int = 70
+    kmeans_max_k: int = 10
+    factor_weights: Dict[str, float] = field(default_factory=lambda: {
+        "momentum": 0.30,
+        "low_volatility": 0.25,
+        "rsi_signal": 0.20,
+        "sharpe": 0.25,
+    })
+
+
+@dataclass
+class StockMetrics:
+    """Computed metrics for a single stock from screening.
+
+    One instance per symbol per screening run.
+    """
+    symbol: str
+    # Returns
+    forward_return: float                       # Forward N-day return
+    momentum_returns: Dict[str, float]          # e.g. {"10d": 0.05, "21d": 0.08}
+    # Technical
+    rsi: float                                  # RSI value (0-100)
+    rsi_signal: str                             # "oversold", "neutral", "overbought"
+    volatility_252d: float                      # Annualized volatility
+    # Performance
+    cagr: float
+    sharpe: float
+    sortino: float
+    calmar: float
+    max_drawdown: float
+    # Factor scoring (Brenndoerfer)
+    z_scores: Dict[str, float]                  # Factor name -> Z-score
+    composite_score: float                      # Weighted sum of Z-scores
+    quintile: int                               # 1 (best) to 5 (worst)
+    # Clustering
+    cluster_id: int = -1                        # K-Means cluster assignment
+    cluster_label: str = ""                     # e.g. "HiMom-LoVol"
+
+
+@dataclass
+class ScreeningResult:
+    """Complete output of a screening run.
+
+    Contains all stock metrics, benchmark performance, and metadata.
+    """
+    run_date: str                               # YYYY-MM-DD
+    config: ScreeningConfig
+    stock_metrics: List[StockMetrics]           # Ordered by composite_score desc
+    # Benchmark (equal-weight universe)
+    benchmark_cagr: float
+    benchmark_sharpe: float
+    benchmark_cumulative_return: float
+    # Metadata
+    num_symbols_input: int
+    num_symbols_with_data: int
+    optimal_k_clusters: int
+    data_quality_notes: List[str] = field(default_factory=list)
+
+
+# ============================================================
 # WF4: Portfolio & Rebalancing
 # ============================================================
 

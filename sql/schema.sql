@@ -95,3 +95,49 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_date ON portfolio_snapshots(date);
+
+-- ============================================================
+-- Screening Runs (WF2: Universe & Screening)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS screening_runs (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL UNIQUE,
+    num_symbols INT,
+    optimal_k INT,
+    benchmark_cagr DECIMAL(10,6),
+    benchmark_sharpe DECIMAL(10,6),
+    benchmark_cumulative_return DECIMAL(10,6),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_screening_runs_date ON screening_runs(run_date);
+
+-- ============================================================
+-- Screening Results (WF2: Universe & Screening)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS screening_results (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    forward_return DECIMAL(10,6),
+    rsi DECIMAL(8,4),
+    rsi_signal VARCHAR(20),
+    volatility_252d DECIMAL(10,6),
+    cagr DECIMAL(10,6),
+    sharpe DECIMAL(10,6),
+    sortino DECIMAL(10,6),
+    calmar DECIMAL(10,6),
+    max_drawdown DECIMAL(10,6),
+    composite_score DECIMAL(10,6),
+    quintile INT,
+    cluster_id INT,
+    cluster_label VARCHAR(50),
+    momentum_returns_json TEXT,
+    z_scores_json TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(run_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_screening_results_run_date ON screening_results(run_date);
+CREATE INDEX IF NOT EXISTS idx_screening_results_symbol ON screening_results(symbol);
+CREATE INDEX IF NOT EXISTS idx_screening_results_quintile ON screening_results(run_date, quintile);
