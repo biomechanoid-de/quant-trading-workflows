@@ -25,8 +25,20 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# US Market Holidays 2026 (NYSE/NASDAQ closed)
-US_HOLIDAYS_2026 = {
+# US Market Holidays (NYSE/NASDAQ closed)
+US_HOLIDAYS = {
+    # 2025
+    "2025-01-01",  # New Year's Day
+    "2025-01-20",  # Martin Luther King Jr. Day
+    "2025-02-17",  # Presidents' Day
+    "2025-04-18",  # Good Friday
+    "2025-05-26",  # Memorial Day
+    "2025-06-19",  # Juneteenth
+    "2025-07-04",  # Independence Day
+    "2025-09-01",  # Labor Day
+    "2025-11-27",  # Thanksgiving
+    "2025-12-25",  # Christmas Day
+    # 2026
     "2026-01-01",  # New Year's Day
     "2026-01-19",  # Martin Luther King Jr. Day
     "2026-02-16",  # Presidents' Day
@@ -55,7 +67,7 @@ def get_trading_days(start_date: str, end_date: str) -> list[str]:
     while current <= end:
         date_str = current.strftime("%Y-%m-%d")
         # Skip weekends (5=Saturday, 6=Sunday)
-        if current.weekday() < 5 and date_str not in US_HOLIDAYS_2026:
+        if current.weekday() < 5 and date_str not in US_HOLIDAYS:
             trading_days.append(date_str)
         current += timedelta(days=1)
 
