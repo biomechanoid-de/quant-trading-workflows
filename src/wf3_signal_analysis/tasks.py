@@ -102,6 +102,44 @@ def _classify_signal_strength(score: float) -> str:
 # ============================================================
 
 @task(
+    requests=Resources(cpu="100m", mem="128Mi"),
+    limits=Resources(cpu="200m", mem="256Mi"),
+)
+def resolve_run_date(
+    run_date: str,
+) -> str:
+    """Resolve empty run_date to the latest WF2 screening run date.
+
+    PostgreSQL DATE columns cannot accept empty strings, so this task
+    ensures all downstream tasks receive a valid YYYY-MM-DD string.
+
+    Args:
+        run_date: Target date (YYYY-MM-DD). Empty = resolve to latest.
+
+    Returns:
+        Resolved date string in YYYY-MM-DD format.
+    """
+    if run_date:
+        return run_date
+
+    from src.shared.db import get_connection
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT MAX(run_date) FROM screening_runs")
+        result = cursor.fetchone()
+        if result and result[0]:
+            return str(result[0])
+        # Fallback: use today's date
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@task(
     requests=Resources(cpu="200m", mem="256Mi"),
     limits=Resources(cpu="500m", mem="512Mi"),
 )
@@ -117,7 +155,7 @@ def load_screening_context(
     Each value is a JSON string: '{"composite_score": 1.23, "quintile": 1}'
 
     Args:
-        run_date: Target date (YYYY-MM-DD). Empty = latest WF2 run.
+        run_date: Target date (YYYY-MM-DD). Must be resolved (not empty).
         max_quintile: Maximum quintile to include (default: 2).
 
     Returns:

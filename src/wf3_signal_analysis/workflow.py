@@ -40,6 +40,7 @@ from src.shared.config import (
     WF3_SMA_LONG,
 )
 from src.wf3_signal_analysis.tasks import (
+    resolve_run_date,
     load_screening_context,
     compute_technical_signals,
     fetch_fundamental_data,
@@ -83,9 +84,13 @@ def signal_analysis_workflow(
     Returns:
         Signal analysis report as formatted text.
     """
+    # Step 0: Resolve empty run_date to latest WF2 screening date
+    # (PostgreSQL DATE columns cannot accept empty strings)
+    resolved_date = resolve_run_date(run_date=run_date)
+
     # Step 1: Load WF2 screening context (top quintiles)
     screening_ctx = load_screening_context(
-        run_date=run_date,
+        run_date=resolved_date,
         max_quintile=max_quintile,
     )
 
@@ -107,12 +112,12 @@ def signal_analysis_workflow(
         fund_signals=fund_signals,
         tech_weight=tech_weight,
         fund_weight=fund_weight,
-        run_date=run_date,
+        run_date=resolved_date,
     )
 
     # Step 4: Assemble result (serialize for downstream tasks)
     assembled = assemble_signal_result(
-        run_date=run_date,
+        run_date=resolved_date,
         signal_results=signal_results,
     )
 
