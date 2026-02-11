@@ -141,3 +141,55 @@ CREATE TABLE IF NOT EXISTS screening_results (
 CREATE INDEX IF NOT EXISTS idx_screening_results_run_date ON screening_results(run_date);
 CREATE INDEX IF NOT EXISTS idx_screening_results_symbol ON screening_results(symbol);
 CREATE INDEX IF NOT EXISTS idx_screening_results_quintile ON screening_results(run_date, quintile);
+
+-- ============================================================
+-- Signal Runs (WF3: Signal & Analysis)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS signal_runs (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL UNIQUE,
+    num_symbols_analyzed INT,
+    num_with_complete_data INT,
+    num_with_partial_data INT,
+    tech_weight DECIMAL(4,2),
+    fund_weight DECIMAL(4,2),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_runs_date ON signal_runs(run_date);
+
+-- ============================================================
+-- Signal Results (WF3: Signal & Analysis)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS signal_results (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    -- WF2 context
+    wf2_composite_score DECIMAL(10,6),
+    wf2_quintile INT,
+    -- Technical signals
+    technical_score DECIMAL(6,2),
+    technical_signal VARCHAR(20),
+    sma_crossover_signal VARCHAR(20),
+    macd_signal VARCHAR(20),
+    bb_signal VARCHAR(20),
+    -- Fundamental signals
+    fundamental_score DECIMAL(6,2),
+    fundamental_signal VARCHAR(20),
+    pe_ratio DECIMAL(10,4),
+    pe_zscore DECIMAL(10,6),
+    dividend_yield DECIMAL(10,6),
+    return_on_equity DECIMAL(10,6),
+    debt_to_equity DECIMAL(10,4),
+    -- Combined
+    combined_signal_score DECIMAL(6,2),
+    signal_strength VARCHAR(20),
+    data_quality VARCHAR(20),
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(run_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_results_run_date ON signal_results(run_date);
+CREATE INDEX IF NOT EXISTS idx_signal_results_symbol ON signal_results(symbol);
+CREATE INDEX IF NOT EXISTS idx_signal_results_strength ON signal_results(run_date, signal_strength);

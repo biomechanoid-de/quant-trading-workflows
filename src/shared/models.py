@@ -2,6 +2,12 @@
 
 All models are plain Python dataclasses. Flytekit serializes them natively
 as task inputs/outputs. No special Flyte type registration needed.
+
+IMPORTANT (Flytekit constraint):
+    Never pass dataclasses with Dict/List fields between Flyte tasks —
+    causes Promise binding errors. Use Dict[str, str] with JSON serialization
+    for complex inter-task data. Dataclasses with only primitive fields
+    (str, int, float, bool) are safe in List[Dataclass].
 """
 
 from dataclasses import dataclass, field
@@ -160,3 +166,114 @@ class DailyReport:
     top_losers: List[str] = field(default_factory=list)
     upcoming_dividends: List[str] = field(default_factory=list)
     alerts: List[str] = field(default_factory=list)
+
+
+# ============================================================
+# WF3: Signal & Analysis
+# ============================================================
+
+@dataclass
+class TechnicalSignals:
+    """Technical indicator signals for a single stock.
+
+    Used by WF3: Signal & Analysis Pipeline.
+    Only primitive fields (str, float) — safe in List[TechnicalSignals]
+    between Flyte tasks.
+
+    All indicators are close-based (no OHLC needed).
+    ATR deferred until WF1 stores OHLC data.
+    """
+    symbol: str
+    # SMA
+    sma_50: float                     # 50-day SMA value
+    sma_200: float                    # 200-day SMA value
+    sma_crossover_signal: str         # "bullish", "bearish", "neutral"
+    # MACD
+    macd_line: float                  # MACD line value
+    macd_signal_line: float           # Signal line value
+    macd_histogram: float             # Histogram value
+    macd_signal: str                  # "bullish", "bearish", "neutral"
+    # Bollinger Bands
+    bb_upper: float                   # Upper band
+    bb_middle: float                  # Middle band (SMA 20)
+    bb_lower: float                   # Lower band
+    bb_signal: str                    # "oversold", "overbought", "neutral"
+    # Composite
+    technical_score: float            # 0-100 weighted tech score
+
+
+@dataclass
+class FundamentalSignals:
+    """Fundamental analysis signals for a single stock.
+
+    Used by WF3: Signal & Analysis Pipeline.
+    Only primitive fields — safe in List[FundamentalSignals].
+
+    Missing data is signaled by -1.0 (ratios) or 0.0 (yields).
+    has_* flags indicate whether the data was available from yfinance.
+    """
+    symbol: str
+    # Valuation
+    pe_ratio: float                   # Trailing P/E (-1.0 = missing)
+    pe_zscore: float                  # Normalized P/E z-score
+    forward_pe: float                 # Forward P/E (-1.0 = missing)
+    price_to_book: float              # P/B ratio (-1.0 = missing)
+    # Income
+    dividend_yield: float             # Dividend yield (0.0 = none)
+    # Efficiency
+    return_on_equity: float           # ROE as decimal (-1.0 = missing)
+    # Leverage
+    debt_to_equity: float             # D/E ratio (-1.0 = missing)
+    current_ratio: float              # Current ratio (-1.0 = missing)
+    # Data completeness flags
+    has_pe: bool = True
+    has_roe: bool = True
+    has_debt: bool = True
+    # Composite
+    fundamental_score: float = 50.0   # 0-100 weighted fundamental score
+    fundamental_signal: str = "balanced"  # "value", "growth", "balanced"
+
+
+@dataclass
+class SignalResult:
+    """Combined signal result for a single stock.
+
+    Used by WF3: Signal & Analysis Pipeline.
+    Only primitive fields — safe in List[SignalResult].
+    """
+    symbol: str
+    run_date: str
+    # WF2 context
+    wf2_composite_score: float        # From screening_results
+    wf2_quintile: int                 # 1 (best) to 5 (worst)
+    # Technical
+    technical_score: float            # 0-100
+    technical_signal: str             # "bullish", "bearish", "neutral"
+    # Fundamental
+    fundamental_score: float          # 0-100
+    fundamental_signal: str           # "value", "growth", "balanced"
+    # Combined
+    combined_signal_score: float      # 0-100 (weighted tech + fund)
+    signal_strength: str              # "strong_buy"/"buy"/"hold"/"sell"/"strong_sell"
+    # Quality
+    data_quality: str = "complete"    # "complete", "partial", "minimal"
+
+
+@dataclass
+class SignalAnalysisResult:
+    """Complete output of a WF3 signal analysis run.
+
+    Contains all per-stock signal results and run metadata.
+    Note: List[SignalResult] field means this dataclass should NOT be
+    passed between Flyte tasks. Only used within assemble_signal_result
+    and for final reporting/storage.
+    """
+    run_date: str
+    signal_results: List[SignalResult]
+    # Metadata
+    num_symbols_analyzed: int
+    num_with_complete_data: int
+    num_with_partial_data: int
+    # Top signals (comma-separated strings for Flytekit safety)
+    top_buy_signals: str = ""         # e.g., "AAPL,MSFT,NVDA"
+    top_sell_signals: str = ""        # e.g., "INTC,NKE"
