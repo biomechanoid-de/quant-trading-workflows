@@ -99,3 +99,14 @@ WF2_RSI_OVERBOUGHT = int(os.environ.get("WF2_RSI_OVERBOUGHT", "70"))
 WF2_MOMENTUM_WINDOWS = [10, 21, 63, 126, 252]  # 2w, 1m, 3m, 6m, 1y in trading days
 WF2_FORECAST_HORIZON = int(os.environ.get("WF2_FORECAST_HORIZON", "21"))  # 1 month forward
 WF2_KMEANS_MAX_K = int(os.environ.get("WF2_KMEANS_MAX_K", "10"))
+
+# ============================================================
+# WF3: Signal & Analysis Defaults
+# ============================================================
+
+WF3_TECH_WEIGHT = float(os.environ.get("WF3_TECH_WEIGHT", "0.50"))       # Phase 2: 50% tech
+WF3_FUND_WEIGHT = float(os.environ.get("WF3_FUND_WEIGHT", "0.50"))       # Phase 2: 50% fund
+WF3_MAX_QUINTILE = int(os.environ.get("WF3_MAX_QUINTILE", "2"))          # Analyze top 40%
+WF3_LOOKBACK_DAYS = int(os.environ.get("WF3_LOOKBACK_DAYS", "252"))      # 1 year of trading days
+WF3_SMA_SHORT = int(os.environ.get("WF3_SMA_SHORT", "50"))              # Short SMA window
+WF3_SMA_LONG = int(os.environ.get("WF3_SMA_LONG", "200"))               # Long SMA window

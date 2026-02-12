@@ -19,9 +19,9 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
  |  WF2: Universe & Screening     (weekly, Sun 08:00 UTC)   [Phase 2]  |
  |   +-> Load prices -> Metrics -> Cluster + Score -> Report           |
  |                                                                      |
- |  WF3: Signal & Analysis        (weekly, after WF2)        [Phase 2]  |
- |   +-> Technical indicators -> Fundamentals -> Sentiment (Hailo)     |
- |   +-> Combine signals -> Composite scoring                          |
+ |  WF3: Signal & Analysis        (weekly, Sun 12:00 UTC)   [Phase 2]  |
+ |   +-> Load WF2 context -> Technical + Fundamentals (parallel)       |
+ |   +-> Combine signals -> Store + Report                             |
  |                                                                      |
  |  WF4: Portfolio & Rebalancing  (monthly, 1st Monday)      [Phase 3]  |
  |   +-> Target weights -> Transaction costs -> Order report           |
@@ -58,29 +58,32 @@ quant-trading-workflows/
 +-- Makefile                           # Build, test, deploy commands
 +-- pyproject.toml                     # Dependencies & project config
 +-- sql/
-|   +-- schema.sql                     # PostgreSQL schema (7 tables)
+|   +-- schema.sql                     # PostgreSQL schema (9 tables)
 +-- src/
 |   +-- shared/                        # Shared across all workflows
-|   |   +-- models.py                  # Data models (MarketDataBatch, StockMetrics, ...)
-|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2 params
-|   |   +-- db.py                      # PostgreSQL helpers (store, query, screening)
-|   |   +-- analytics.py              # Pure computation functions (RSI, Sharpe, ...)
+|   |   +-- models.py                  # Data models (11 dataclasses)
+|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2/WF3 params
+|   |   +-- db.py                      # PostgreSQL helpers (store, query, screening, signals)
+|   |   +-- analytics.py              # 20 pure functions (RSI, SMA, MACD, Bollinger, ...)
+|   |   +-- storage.py                # MinIO/S3 Parquet storage
 |   |   +-- providers/
 |   |       +-- base.py                # DataProvider ABC (pluggable)
-|   |       +-- yfinance_provider.py   # Phase 1: free data via yfinance
+|   |       +-- yfinance_provider.py   # YFinance: EOD + fundamentals
 |   +-- wf1_data_ingestion/            # Phase 1: IMPLEMENTED
 |   |   +-- tasks.py                   # fetch, validate, store, quality_check
 |   |   +-- workflow.py                # data_ingestion_workflow
 |   +-- wf2_universe_screening/        # Phase 2: IMPLEMENTED
 |   |   +-- tasks.py                   # 9 tasks: load, compute, cluster, score, store, report
 |   |   +-- workflow.py                # universe_screening_workflow
-|   +-- wf3_signal_analysis/           # Phase 2: stub
+|   +-- wf3_signal_analysis/           # Phase 2: IMPLEMENTED
+|   |   +-- tasks.py                   # 8 tasks: load, tech, fund, combine, assemble, store, report
+|   |   +-- workflow.py                # signal_analysis_workflow
 |   +-- wf4_portfolio_rebalancing/     # Phase 3: stub
 |   +-- wf5_monitoring/                # Phase 5: stub
 +-- launch_plans/
 |   +-- development.py                 # No schedules (all dev runs manual)
-|   +-- production.py                  # WF1 daily 06:00 UTC + WF2 weekly Sun 08:00 UTC
-+-- tests/                             # 98 unit tests (no network/DB required)
+|   +-- production.py                  # WF1 daily + WF2 weekly + WF3 weekly
++-- tests/                             # 165 unit tests (no network/DB required)
 +-- scripts/
     +-- run_local.sh                   # Local WF1 testing
 ```
@@ -182,7 +185,7 @@ Four factors with Z-score normalization and quintile ranking (Q1=best, Q5=worst)
 
 ### Analytics Functions (`src/shared/analytics.py`)
 
-11 pure computation functions, fully unit-tested, no side effects:
+11 pure computation functions for WF2, fully unit-tested, no side effects (see WF3 section for 9 additional functions):
 
 | Function | Description |
 |----------|-------------|
@@ -221,15 +224,96 @@ Four factors with Z-score normalization and quintile ranking (Q1=best, Q5=worst)
 
 ---
 
+## Phase 2: Signal & Analysis (WF3)
+
+Deeper technical and fundamental analysis for WF2's top-ranked stocks (quintiles 1-2). Produces composite buy/hold/sell signals with configurable weights.
+
+### Pipeline (8 Tasks, Parallel DAG)
+
+```
+load_screening_context --> +- compute_technical_signals  -+--> combine_signals --> assemble_signal_result
+      (200m/256Mi)         +- fetch_fundamental_data     -+     (300m/256Mi)          (200m/256Mi)
+                                                                                           |
+                                                                          +----------------+----------------+
+                                                                          v                v                v
+                                                                  store_signals_to_db  store_to_parquet  generate_report
+                                                                    (200m/256Mi)       (200m/256Mi)      (100m/128Mi)
+```
+
+### Technical Indicators (Close-Based)
+
+All indicators work with close prices only (WF1 currently stores close, not OHLC). ATR deferred until WF1 is upgraded.
+
+| Indicator | Parameters | Signal Output |
+|-----------|------------|---------------|
+| **SMA Crossover** | Short=50, Long=200 | bullish (Golden Cross) / bearish (Death Cross) / neutral |
+| **MACD** | Fast=12, Slow=26, Signal=9 | bullish / bearish / neutral |
+| **Bollinger Bands** | Window=20, 2 std dev | oversold / overbought / neutral |
+
+Technical Score = SMA (40%) + MACD (35%) + Bollinger (25%)
+
+### Fundamental Analysis (via yfinance)
+
+| Metric | Weight | Interpretation |
+|--------|--------|----------------|
+| **P/E Ratio** | 30% | Z-score vs sector median (lower = more undervalued) |
+| **Dividend Yield** | 15% | Higher yield = better for income |
+| **ROE** | 25% | Higher efficiency = better |
+| **Debt/Equity** | 15% | Lower leverage = better |
+| **Current Ratio** | 15% | Closer to 1.5 = healthier |
+
+### Signal Strength Classification
+
+| Combined Score | Signal |
+|---------------|--------|
+| >= 75 | **Strong Buy** |
+| 60-74 | **Buy** |
+| 40-59 | **Hold** |
+| 25-39 | **Sell** |
+| < 25 | **Strong Sell** |
+
+### Analytics Functions (added for WF3)
+
+9 new pure computation functions in `src/shared/analytics.py`:
+
+| Function | Description |
+|----------|-------------|
+| `calculate_sma` | Simple Moving Average |
+| `calculate_sma_crossover_signal` | Golden/Death Cross detection |
+| `calculate_macd` | MACD line, signal line, histogram |
+| `classify_macd_signal` | Bullish/bearish/neutral from MACD |
+| `calculate_bollinger_bands` | Upper, middle, lower bands |
+| `classify_bollinger_signal` | Oversold/overbought/neutral |
+| `normalize_pe_ratio` | P/E z-score vs sector median |
+| `compute_fundamental_score` | Weighted 0-100 fundamental score |
+| `classify_value_signal` | Value/growth/balanced classification |
+
+### Dual-Write Output
+
+- **PostgreSQL:** `signal_runs` (metadata) + `signal_results` (per-symbol technical + fundamental + combined)
+- **MinIO Parquet:** `s3://quant-data/signals/year=YYYY/month=MM/day=DD/signals.parquet`
+- **Text Report:** Signal distribution, top buys/sells, per-stock details
+
+### Key Design Decisions
+
+- **Top 40% filter:** Only analyzes WF2 quintiles 1-2 (~20 stocks) to respect Pi cluster + yfinance rate limits
+- **50/50 weights:** Phase 2 has no sentiment. Phase 4 shifts to 30% tech / 40% fund / 30% sentiment
+- **Graceful fundamentals:** Missing P/E, ROE, D/E default to neutral scores (not exclusion). `data_quality` field tracks completeness
+- **Rate limiting:** 0.2s sleep between yfinance fundamental fetches (5 req/s)
+
+---
+
 ## Database Schema
 
-PostgreSQL on pi5-1tb (NVMe SSD). Seven tables:
+PostgreSQL on pi5-1tb (NVMe SSD). Nine tables:
 
 | Table | Workflow | Purpose |
 |-------|----------|---------|
 | `market_data` | WF1 | OHLCV price data with UNIQUE(symbol, date) |
 | `screening_runs` | WF2 | Screening run metadata (benchmark, optimal K) |
 | `screening_results` | WF2 | Per-symbol metrics, scores, quintiles, clusters |
+| `signal_runs` | WF3 | Signal analysis run metadata |
+| `signal_results` | WF3 | Per-symbol technical + fundamental + combined signals |
 | `positions` | WF4 | Current portfolio positions |
 | `trades` | WF4 | Executed trades with cost breakdown |
 | `dividends` | WF4 | Dividend tracking and reinvestment |
@@ -300,6 +384,7 @@ Schedules are controlled exclusively via two files:
 |------|--------|---------|
 | `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` -- Cron `0 6 * * *` (daily 06:00 UTC) |
 | `launch_plans/production.py` | production | `wf2_universe_screening_prod_weekly` -- Cron `0 8 * * 0` (Sunday 08:00 UTC) |
+| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_weekly` -- Cron `0 12 * * 0` (Sunday 12:00 UTC) |
 | `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
@@ -344,18 +429,19 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 
 ---
 
-## Current Status (Phase 2 In Progress)
+## Current Status (Phase 2 Complete)
 
 | Component | Status |
 |-----------|--------|
 | WF1: Data Ingestion (5 tasks, dual-write) | Running daily at 06:00 UTC |
 | WF2: Universe & Screening (9 tasks, parallel DAG) | Running weekly Sun 08:00 UTC |
-| WF3-WF5 Stubs | Registered, ready for Phase 2-5 |
-| Historical Backfill | 26 trading days (Jan 1 - Feb 8, 2026) |
+| WF3: Signal & Analysis (8 tasks, parallel DAG) | Running weekly Sun 12:00 UTC |
+| WF4-WF5 Stubs | Registered, ready for Phase 3-5 |
+| Historical Backfill | Full 2025 (250 trading days, 2,475 rows) + 2026 YTD |
 | CI/CD Pipeline | 20+ successful runs |
-| Launch Plan Management | Explicit activation via `pyflyte launchplan` |
+| Launch Plan Management | 3 active launch plans (WF1 daily + WF2 weekly + WF3 weekly) |
 | Flyte Domains | Only development + production (staging removed) |
-| Unit Tests | 98 tests, 92% coverage |
+| Unit Tests | 165 tests, 90% coverage |
 
 ## Related Repositories
 
@@ -372,8 +458,8 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 |----------|------|-------------|----------------|-----|
 | WF1: Data Ingestion | Pi 4 Workers | 100-500m | 128-512Mi | I/O-bound (API calls) |
 | WF2: Universe Screening | Pi 4 Workers | 100-500m | 128-512Mi | CPU-bound (analytics, K-Means) |
-| WF3: Signal (Tech+Fund) | Pi 4 Workers | TBD | TBD | CPU-bound, parallelizable |
-| WF3: Sentiment | **Pi 5 AI (Hailo)** | TBD | TBD | NPU for ML inference |
+| WF3: Signal (Tech+Fund) | Pi 4 Workers | 100-500m | 128Mi-1Gi | CPU-bound (indicators) + I/O (yfinance) |
+| WF3: Sentiment (Phase 4) | **Pi 5 AI (Hailo)** | TBD | TBD | NPU for ML inference |
 | WF4: Portfolio | Pi 4 Workers | TBD | TBD | CPU-bound, moderate |
 | WF5: Monitoring | Pi 4 Workers | TBD | TBD | Lightweight |
 

@@ -5,21 +5,29 @@ CI/CD registers this file to the production domain on push to main.
 If no launch plans are defined here, only the default (manual) launch plans exist.
 
 Current schedules:
-- WF1 Data Ingestion: Daily at 06:00 UTC (all 10 Phase 1 symbols, before EU market open)
+- WF1 Data Ingestion: Daily at 06:00 UTC (all 49 Phase 2 symbols, before EU market open)
 - WF2 Universe Screening: Weekly Sunday at 08:00 UTC (49 Phase 2 symbols, full screening)
+- WF3 Signal Analysis: Weekly Sunday at 12:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
 """
 
 from flytekit import CronSchedule, LaunchPlan
 
-from src.shared.config import PHASE1_SYMBOLS, PHASE2_SYMBOLS
+from src.shared.config import (
+    PHASE2_SYMBOLS,
+    WF3_MAX_QUINTILE, WF3_LOOKBACK_DAYS,
+    WF3_TECH_WEIGHT, WF3_FUND_WEIGHT,
+    WF3_SMA_SHORT, WF3_SMA_LONG,
+)
 from src.wf1_data_ingestion.workflow import data_ingestion_workflow
 from src.wf2_universe_screening.workflow import universe_screening_workflow
+from src.wf3_signal_analysis.workflow import signal_analysis_workflow
 
-# WF1 Data Ingestion - daily at 06:00 UTC (all 10 Phase 1 symbols)
+# WF1 Data Ingestion - daily at 06:00 UTC (all 49 Phase 2 symbols)
+# Expanded from PHASE1 (10) to PHASE2 (49) so WF2 has full universe data
 wf1_prod_daily = LaunchPlan.get_or_create(
     name="wf1_data_ingestion_prod_daily",
     workflow=data_ingestion_workflow,
-    default_inputs={"symbols": PHASE1_SYMBOLS, "date": ""},
+    default_inputs={"symbols": PHASE2_SYMBOLS, "date": ""},
     schedule=CronSchedule(schedule="0 6 * * *"),
 )
 
@@ -34,4 +42,21 @@ wf2_prod_weekly = LaunchPlan.get_or_create(
         "run_date": "",
     },
     schedule=CronSchedule(schedule="0 8 * * 0"),
+)
+
+# WF3 Signal Analysis - weekly Sunday at 12:00 UTC (4 hours after WF2)
+# Analyzes top quintile stocks from WF2 with 50% tech + 50% fundamental signals
+wf3_prod_weekly = LaunchPlan.get_or_create(
+    name="wf3_signal_analysis_prod_weekly",
+    workflow=signal_analysis_workflow,
+    default_inputs={
+        "run_date": "",
+        "max_quintile": WF3_MAX_QUINTILE,
+        "lookback_days": WF3_LOOKBACK_DAYS,
+        "tech_weight": WF3_TECH_WEIGHT,
+        "fund_weight": WF3_FUND_WEIGHT,
+        "sma_short": WF3_SMA_SHORT,
+        "sma_long": WF3_SMA_LONG,
+    },
+    schedule=CronSchedule(schedule="0 12 * * 0"),
 )

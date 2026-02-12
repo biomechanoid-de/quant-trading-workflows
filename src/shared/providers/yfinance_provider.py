@@ -94,11 +94,65 @@ class YFinanceProvider(DataProvider):
         )
 
     def fetch_fundamentals(self, symbol: str) -> dict:
-        """Fetch fundamental data - stub for Phase 2.
+        """Fetch fundamental data from yfinance ticker.info.
 
-        Will be implemented with P/E ratio, ROE, dividend yield, etc.
+        Retrieves valuation, income, efficiency, and leverage metrics.
+        Missing data defaults to -1.0 (ratios) or 0.0 (yields) so
+        downstream scoring can identify and handle gaps gracefully.
+
+        Args:
+            symbol: Stock ticker symbol (e.g., "AAPL").
+
+        Returns:
+            Dict with keys: symbol, pe_ratio, forward_pe, price_to_book,
+            dividend_yield, return_on_equity, debt_to_equity, current_ratio,
+            trailing_eps, sector, industry.
         """
-        return {"symbol": symbol, "status": "not_implemented", "phase": 2}
+        import yfinance as yf
+
+        defaults = {
+            "symbol": symbol,
+            "pe_ratio": -1.0,
+            "forward_pe": -1.0,
+            "price_to_book": -1.0,
+            "dividend_yield": 0.0,
+            "return_on_equity": -1.0,
+            "debt_to_equity": -1.0,
+            "current_ratio": -1.0,
+            "trailing_eps": -1.0,
+            "sector": "",
+            "industry": "",
+        }
+
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+
+            if not info:
+                return defaults
+
+            # D/E ratio from yfinance is in percentage (e.g., 150 = 1.5x)
+            raw_de = info.get("debtToEquity")
+            if raw_de is not None and float(raw_de) > 0:
+                de_ratio = float(raw_de) / 100.0
+            else:
+                de_ratio = -1.0
+
+            return {
+                "symbol": symbol,
+                "pe_ratio": float(info.get("trailingPE") or -1.0),
+                "forward_pe": float(info.get("forwardPE") or -1.0),
+                "price_to_book": float(info.get("priceToBook") or -1.0),
+                "dividend_yield": float(info.get("dividendYield") or 0.0),
+                "return_on_equity": float(info.get("returnOnEquity") or -1.0),
+                "debt_to_equity": de_ratio,
+                "current_ratio": float(info.get("currentRatio") or -1.0),
+                "trailing_eps": float(info.get("trailingEps") or -1.0),
+                "sector": str(info.get("sector", "")),
+                "industry": str(info.get("industry", "")),
+            }
+        except Exception:
+            return defaults
 
     def fetch_dividends(self, symbol: str) -> list:
         """Fetch dividend history - stub for Phase 3.

@@ -274,3 +274,363 @@ def assign_quintiles(scores: "pd.Series") -> "pd.Series":
         # Not enough unique values for 5 bins
         import pandas as pd
         return pd.Series(3, index=scores.index)
+
+
+# ============================================================
+# WF3: Technical Indicators (close-only — no OHLC needed)
+# ============================================================
+
+def calculate_sma(prices: list, window: int) -> list:
+    """Calculate Simple Moving Average from a list of close prices.
+
+    Uses a rolling window average. Returns NaN for positions where
+    there are fewer than `window` data points.
+
+    Args:
+        prices: List of close prices (chronological order, oldest first).
+        window: SMA lookback window (e.g., 50, 200).
+
+    Returns:
+        List of SMA values (same length as prices, leading NaNs).
+    """
+    if not prices or window <= 0:
+        return []
+    result = []
+    for i in range(len(prices)):
+        if i < window - 1:
+            result.append(float("nan"))
+        else:
+            window_slice = prices[i - window + 1:i + 1]
+            result.append(sum(window_slice) / window)
+    return result
+
+
+def calculate_sma_crossover_signal(
+    prices: list,
+    short_window: int = 50,
+    long_window: int = 200,
+) -> str:
+    """Determine SMA crossover signal (Golden Cross / Death Cross).
+
+    - Golden Cross: Short SMA crosses above Long SMA → "bullish"
+    - Death Cross: Short SMA crosses below Long SMA → "bearish"
+    - No clear signal → "neutral"
+
+    Requires at least `long_window` data points.
+
+    Args:
+        prices: List of close prices (chronological order).
+        short_window: Short-term SMA window (default: 50).
+        long_window: Long-term SMA window (default: 200).
+
+    Returns:
+        One of: "bullish", "bearish", "neutral"
+    """
+    if len(prices) < long_window:
+        return "neutral"
+
+    sma_short = calculate_sma(prices, short_window)
+    sma_long = calculate_sma(prices, long_window)
+
+    # Check the last two valid points for crossover detection
+    import math
+    if math.isnan(sma_short[-1]) or math.isnan(sma_long[-1]):
+        return "neutral"
+
+    # Current relationship
+    if sma_short[-1] > sma_long[-1]:
+        # Check if this is a recent cross (within last 5 days)
+        for i in range(max(len(prices) - 5, long_window - 1), len(prices) - 1):
+            if not math.isnan(sma_short[i]) and not math.isnan(sma_long[i]):
+                if sma_short[i] <= sma_long[i]:
+                    return "bullish"  # Golden Cross detected
+        # Short above long but no recent cross — still bullish bias
+        return "bullish"
+    elif sma_short[-1] < sma_long[-1]:
+        # Check for recent death cross
+        for i in range(max(len(prices) - 5, long_window - 1), len(prices) - 1):
+            if not math.isnan(sma_short[i]) and not math.isnan(sma_long[i]):
+                if sma_short[i] >= sma_long[i]:
+                    return "bearish"  # Death Cross detected
+        return "bearish"
+    return "neutral"
+
+
+def _ema(prices: list, span: int) -> list:
+    """Calculate Exponential Moving Average (helper for MACD).
+
+    Uses the standard EMA formula: EMA_t = α * price_t + (1-α) * EMA_{t-1}
+    where α = 2 / (span + 1).
+
+    Args:
+        prices: List of close prices.
+        span: EMA span (e.g., 12, 26).
+
+    Returns:
+        List of EMA values (same length as prices).
+    """
+    if not prices:
+        return []
+    alpha = 2.0 / (span + 1)
+    ema = [prices[0]]
+    for i in range(1, len(prices)):
+        ema.append(alpha * prices[i] + (1 - alpha) * ema[-1])
+    return ema
+
+
+def calculate_macd(
+    prices: list,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> tuple:
+    """Calculate MACD (Moving Average Convergence Divergence).
+
+    MACD Line = EMA(fast) - EMA(slow)
+    Signal Line = EMA(MACD Line, signal period)
+    Histogram = MACD Line - Signal Line
+
+    Args:
+        prices: List of close prices (chronological order).
+        fast: Fast EMA period (default: 12).
+        slow: Slow EMA period (default: 26).
+        signal: Signal line EMA period (default: 9).
+
+    Returns:
+        Tuple of (macd_line, signal_line, histogram) — each a float
+        representing the latest value. Returns (0.0, 0.0, 0.0) if
+        insufficient data.
+    """
+    if len(prices) < slow + signal:
+        return (0.0, 0.0, 0.0)
+
+    ema_fast = _ema(prices, fast)
+    ema_slow = _ema(prices, slow)
+
+    # MACD line = fast EMA - slow EMA
+    macd_line = [ema_fast[i] - ema_slow[i] for i in range(len(prices))]
+
+    # Signal line = EMA of MACD line
+    signal_line = _ema(macd_line, signal)
+
+    # Histogram = MACD - Signal
+    histogram = [macd_line[i] - signal_line[i] for i in range(len(prices))]
+
+    return (
+        round(macd_line[-1], 6),
+        round(signal_line[-1], 6),
+        round(histogram[-1], 6),
+    )
+
+
+def classify_macd_signal(macd: float, signal_line: float, histogram: float) -> str:
+    """Classify MACD into a trading signal.
+
+    - Bullish: MACD > Signal Line AND histogram positive (upward momentum)
+    - Bearish: MACD < Signal Line AND histogram negative (downward momentum)
+    - Neutral: otherwise
+
+    Args:
+        macd: MACD line value.
+        signal_line: Signal line value.
+        histogram: MACD histogram value.
+
+    Returns:
+        One of: "bullish", "bearish", "neutral"
+    """
+    if macd > signal_line and histogram > 0:
+        return "bullish"
+    elif macd < signal_line and histogram < 0:
+        return "bearish"
+    return "neutral"
+
+
+def calculate_bollinger_bands(
+    prices: list,
+    window: int = 20,
+    num_std: float = 2.0,
+) -> tuple:
+    """Calculate Bollinger Bands from close prices.
+
+    - Middle Band = SMA(window)
+    - Upper Band = Middle + num_std * std(window)
+    - Lower Band = Middle - num_std * std(window)
+
+    Args:
+        prices: List of close prices (chronological order).
+        window: Rolling window (default: 20).
+        num_std: Number of standard deviations (default: 2.0).
+
+    Returns:
+        Tuple of (upper, middle, lower) — each a float representing
+        the latest value. Returns (0.0, 0.0, 0.0) if insufficient data.
+    """
+    if len(prices) < window:
+        return (0.0, 0.0, 0.0)
+
+    # Use the last `window` prices
+    window_prices = prices[-window:]
+    middle = sum(window_prices) / window
+
+    # Standard deviation
+    variance = sum((p - middle) ** 2 for p in window_prices) / window
+    std = variance ** 0.5
+
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+
+    return (round(upper, 4), round(middle, 4), round(lower, 4))
+
+
+def classify_bollinger_signal(
+    price: float,
+    upper: float,
+    lower: float,
+    middle: float,
+) -> str:
+    """Classify current price position relative to Bollinger Bands.
+
+    - "oversold": Price at or below lower band (potential buy)
+    - "overbought": Price at or above upper band (potential sell)
+    - "neutral": Price between bands
+
+    Args:
+        price: Current close price.
+        upper: Upper Bollinger Band.
+        lower: Lower Bollinger Band.
+        middle: Middle Bollinger Band (SMA).
+
+    Returns:
+        One of: "oversold", "overbought", "neutral"
+    """
+    if upper == 0 and lower == 0:
+        return "neutral"
+    if price <= lower:
+        return "oversold"
+    elif price >= upper:
+        return "overbought"
+    return "neutral"
+
+
+# ============================================================
+# WF3: Fundamental Analysis
+# ============================================================
+
+def normalize_pe_ratio(pe: float, sector_median: float = 20.0) -> float:
+    """Normalize P/E ratio to a z-score relative to sector median.
+
+    Lower P/E relative to sector = more undervalued = positive z-score
+    (value-investing perspective).
+
+    Args:
+        pe: Trailing P/E ratio. -1.0 means missing data.
+        sector_median: Sector median P/E (default: 20.0).
+
+    Returns:
+        Z-score float. Returns 0.0 for missing data (pe <= 0 or pe == -1).
+    """
+    if pe <= 0 or pe == -1.0:
+        return 0.0
+    # Invert: lower PE = higher score (more undervalued)
+    return (sector_median - pe) / sector_median
+
+
+def compute_fundamental_score(
+    pe_zscore: float,
+    div_yield: float,
+    roe: float,
+    de_ratio: float,
+    current_ratio: float = 1.5,
+) -> float:
+    """Compute a composite fundamental score (0-100).
+
+    Weighted factors (value-oriented):
+    - P/E z-score: 30% (lower PE = higher score)
+    - Dividend yield: 15% (higher = better)
+    - ROE: 25% (higher = better, capped at 50%)
+    - D/E ratio: 15% (lower = better, capped score)
+    - Current ratio: 15% (closer to 1.5 = better)
+
+    Missing data (signaled by -1.0 or 0.0) gets a neutral 50 for that factor.
+
+    Args:
+        pe_zscore: Normalized P/E z-score from normalize_pe_ratio.
+        div_yield: Dividend yield as decimal (e.g., 0.02 = 2%).
+        roe: Return on equity as decimal (e.g., 0.25 = 25%).
+        de_ratio: Debt-to-equity ratio (e.g., 0.5). -1.0 = missing.
+        current_ratio: Current ratio (default: 1.5). -1.0 = missing.
+
+    Returns:
+        Score from 0 to 100.
+    """
+    # P/E component: z-score mapped to 0-100 (z=+1 → 75, z=-1 → 25)
+    pe_score = max(0, min(100, 50 + pe_zscore * 25))
+
+    # Dividend yield: 0% → 30, 2% → 60, 4%+ → 90
+    if div_yield < 0:
+        dy_score = 50.0  # missing
+    else:
+        dy_score = max(0, min(100, 30 + div_yield * 100 * 15))
+
+    # ROE: 0% → 20, 15% → 60, 30%+ → 90
+    if roe <= -1.0:
+        roe_score = 50.0  # missing
+    else:
+        roe_score = max(0, min(100, 20 + roe * 100 * 2.33))
+
+    # D/E ratio: 0 → 90 (no debt), 1.0 → 50, 2.0+ → 10
+    if de_ratio < 0:
+        de_score = 50.0  # missing
+    else:
+        de_score = max(0, min(100, 90 - de_ratio * 40))
+
+    # Current ratio: 1.5 is ideal, below 1.0 or above 3.0 is worse
+    if current_ratio < 0:
+        cr_score = 50.0  # missing
+    else:
+        deviation = abs(current_ratio - 1.5)
+        cr_score = max(0, min(100, 80 - deviation * 20))
+
+    # Weighted combination
+    score = (
+        pe_score * 0.30
+        + dy_score * 0.15
+        + roe_score * 0.25
+        + de_score * 0.15
+        + cr_score * 0.15
+    )
+    return round(max(0, min(100, score)), 2)
+
+
+def classify_value_signal(
+    pe_zscore: float,
+    div_yield: float,
+    roe: float,
+    de_ratio: float,
+) -> str:
+    """Classify a stock's fundamental profile.
+
+    - "value": Low P/E + decent dividend yield (undervalued income stock)
+    - "growth": High P/E + high ROE + low dividend (growth reinvestor)
+    - "balanced": Mix of characteristics
+
+    Args:
+        pe_zscore: Normalized P/E z-score.
+        div_yield: Dividend yield as decimal.
+        roe: Return on equity as decimal. -1.0 = missing.
+        de_ratio: Debt-to-equity ratio. -1.0 = missing.
+
+    Returns:
+        One of: "value", "growth", "balanced"
+    """
+    # Value: positive PE z-score (low PE) AND decent dividend
+    is_low_pe = pe_zscore > 0.2
+    has_dividend = div_yield > 0.01  # >1% yield
+    is_high_roe = roe > 0.15 if roe > -1.0 else False
+    is_high_pe = pe_zscore < -0.2
+
+    if is_low_pe and has_dividend:
+        return "value"
+    elif is_high_pe and is_high_roe and div_yield < 0.01:
+        return "growth"
+    return "balanced"
