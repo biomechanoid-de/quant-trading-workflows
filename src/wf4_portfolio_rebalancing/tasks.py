@@ -782,6 +782,118 @@ def generate_order_report(assembled_result: Dict[str, str]) -> str:
     return report
 
 
+# ============================================================
+# Task 10: Store to Parquet (PARALLEL with Tasks 8 & 9)
+# ============================================================
+
+@task(
+    requests=Resources(cpu="200m", mem="256Mi"),
+    limits=Resources(cpu="500m", mem="512Mi"),
+)
+def store_rebalancing_to_parquet(assembled_result: Dict[str, str]) -> str:
+    """Store rebalancing results as Parquet to MinIO/S3.
+
+    Writes two Hive-partitioned Parquet files:
+    1. Portfolio summary + target weights:
+       s3://quant-data/rebalancing/year=YYYY/month=MM/day=DD/target_weights.parquet
+    2. Trade orders:
+       s3://quant-data/rebalancing/year=YYYY/month=MM/day=DD/trade_orders.parquet
+
+    Args:
+        assembled_result: Dict from assemble_rebalancing_result.
+
+    Returns:
+        Summary string with S3 paths.
+    """
+    import io
+    import json
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from src.shared.config import S3_DATA_BUCKET, SYMBOL_SECTORS
+    from src.shared.storage import get_s3_client
+
+    run_date = assembled_result["run_date"]
+    year, month, day = run_date.split("-")
+    base_path = f"rebalancing/year={year}/month={month}/day={day}"
+
+    weights = json.loads(assembled_result.get("target_weights_json", "{}"))
+    orders = json.loads(assembled_result.get("trade_orders_json", "[]"))
+    signal_ctx = json.loads(assembled_result.get("signal_context_json", "{}"))
+
+    client = get_s3_client()
+    stored_files = []
+
+    # --- File 1: Target weights ---
+    if weights:
+        symbols = sorted(weights.keys())
+        table = pa.table({
+            "run_date": pa.array([run_date] * len(symbols), type=pa.string()),
+            "symbol": pa.array(symbols, type=pa.string()),
+            "sector": pa.array(
+                [SYMBOL_SECTORS.get(s, "Unknown") for s in symbols],
+                type=pa.string(),
+            ),
+            "target_weight": pa.array(
+                [weights[s] for s in symbols], type=pa.float64(),
+            ),
+            "signal_strength": pa.array(
+                [signal_ctx.get(s, {}).get("signal_strength", "") for s in symbols],
+                type=pa.string(),
+            ),
+            "combined_signal_score": pa.array(
+                [signal_ctx.get(s, {}).get("combined_signal_score", 0.0) for s in symbols],
+                type=pa.float64(),
+            ),
+            "total_portfolio_value": pa.array(
+                [float(assembled_result.get("total_value", 0))] * len(symbols),
+                type=pa.float64(),
+            ),
+            "cash_value": pa.array(
+                [float(assembled_result.get("cash_value", 0))] * len(symbols),
+                type=pa.float64(),
+            ),
+        })
+
+        buf = io.BytesIO()
+        pq.write_table(table, buf, compression="snappy")
+        s3_key = f"{base_path}/target_weights.parquet"
+        client.put_object(
+            Bucket=S3_DATA_BUCKET, Key=s3_key,
+            Body=buf.getvalue(), ContentType="application/octet-stream",
+        )
+        stored_files.append(f"s3://{S3_DATA_BUCKET}/{s3_key}")
+
+    # --- File 2: Trade orders ---
+    if orders:
+        table = pa.table({
+            "run_date": pa.array([run_date] * len(orders), type=pa.string()),
+            "symbol": pa.array([o["symbol"] for o in orders], type=pa.string()),
+            "side": pa.array([o["side"] for o in orders], type=pa.string()),
+            "quantity": pa.array([o["quantity"] for o in orders], type=pa.int64()),
+            "estimated_price": pa.array(
+                [o["estimated_price"] for o in orders], type=pa.float64(),
+            ),
+            "estimated_cost_bps": pa.array(
+                [o["estimated_cost_bps"] for o in orders], type=pa.float64(),
+            ),
+            "reason": pa.array([o["reason"] for o in orders], type=pa.string()),
+        })
+
+        buf = io.BytesIO()
+        pq.write_table(table, buf, compression="snappy")
+        s3_key = f"{base_path}/trade_orders.parquet"
+        client.put_object(
+            Bucket=S3_DATA_BUCKET, Key=s3_key,
+            Body=buf.getvalue(), ContentType="application/octet-stream",
+        )
+        stored_files.append(f"s3://{S3_DATA_BUCKET}/{s3_key}")
+
+    if not stored_files:
+        return f"No rebalancing data to store for {run_date}"
+
+    return f"Stored {len(stored_files)} Parquet files: {', '.join(stored_files)}"
+
+
 def _upload_report_to_minio(report: str, run_date: str) -> str:
     """Upload markdown report to MinIO (helper function).
 
