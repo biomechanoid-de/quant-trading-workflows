@@ -110,3 +110,53 @@ WF3_MAX_QUINTILE = int(os.environ.get("WF3_MAX_QUINTILE", "2"))          # Analy
 WF3_LOOKBACK_DAYS = int(os.environ.get("WF3_LOOKBACK_DAYS", "252"))      # 1 year of trading days
 WF3_SMA_SHORT = int(os.environ.get("WF3_SMA_SHORT", "50"))              # Short SMA window
 WF3_SMA_LONG = int(os.environ.get("WF3_SMA_LONG", "200"))               # Long SMA window
+
+# ============================================================
+# WF4: Portfolio & Rebalancing Defaults
+# ============================================================
+
+WF4_INITIAL_CAPITAL = float(os.environ.get("WF4_INITIAL_CAPITAL", "25000.0"))  # EUR 25,000
+WF4_MAX_POSITION_PCT = float(os.environ.get("WF4_MAX_POSITION_PCT", "0.05"))   # 5% max per stock
+WF4_MAX_SECTOR_PCT = float(os.environ.get("WF4_MAX_SECTOR_PCT", "0.25"))       # 25% max per sector
+WF4_CASH_RESERVE_PCT = float(os.environ.get("WF4_CASH_RESERVE_PCT", "0.05"))   # 5% cash reserve
+WF4_MIN_TRADE_VALUE = float(os.environ.get("WF4_MIN_TRADE_VALUE", "100.0"))    # Skip trades < EUR 100
+WF4_COMMISSION_PER_SHARE = float(os.environ.get("WF4_COMMISSION_PER_SHARE", "0.005"))  # $0.005/share
+WF4_EXCHANGE_FEE_BPS = float(os.environ.get("WF4_EXCHANGE_FEE_BPS", "3.0"))    # 3 bps exchange fee
+WF4_IMPACT_BPS_PER_1K = float(os.environ.get("WF4_IMPACT_BPS_PER_1K", "0.1")) # 0.1 bps market impact per $1000
+
+# ============================================================
+# GICS Sector Mapping for PHASE2_SYMBOLS
+# ============================================================
+# Hardcoded mapping — more reliable than yfinance lookups and avoids rate limiting.
+# Must be updated when adding new symbols to PHASE2_SYMBOLS.
+
+SYMBOL_SECTORS = {
+    # Technology (10)
+    "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Technology",
+    "NVDA": "Technology", "META": "Technology", "AVGO": "Technology",
+    "ADBE": "Technology", "CRM": "Technology", "CSCO": "Technology", "INTC": "Technology",
+    # Consumer Discretionary (5)
+    "AMZN": "Consumer Discretionary", "TSLA": "Consumer Discretionary",
+    "HD": "Consumer Discretionary", "MCD": "Consumer Discretionary", "NKE": "Consumer Discretionary",
+    # Financials (6)
+    "JPM": "Financials", "V": "Financials", "BAC": "Financials",
+    "GS": "Financials", "MS": "Financials", "BLK": "Financials",
+    # Healthcare (5)
+    "JNJ": "Healthcare", "UNH": "Healthcare", "PFE": "Healthcare",
+    "ABT": "Healthcare", "TMO": "Healthcare",
+    # Industrials (4)
+    "CAT": "Industrials", "HON": "Industrials", "UPS": "Industrials", "RTX": "Industrials",
+    # Consumer Staples (4)
+    "PG": "Consumer Staples", "KO": "Consumer Staples",
+    "PEP": "Consumer Staples", "WMT": "Consumer Staples",
+    # Energy (3)
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy",
+    # Communication Services (3)
+    "NFLX": "Communication Services", "DIS": "Communication Services", "CMCSA": "Communication Services",
+    # Utilities (3)
+    "NEE": "Utilities", "DUK": "Utilities", "SO": "Utilities",
+    # Real Estate (3)
+    "AMT": "Real Estate", "PLD": "Real Estate", "CCI": "Real Estate",
+    # Materials (3)
+    "LIN": "Materials", "APD": "Materials", "SHW": "Materials",
+}

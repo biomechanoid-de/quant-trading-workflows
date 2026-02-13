@@ -634,3 +634,173 @@ def classify_value_signal(
     elif is_high_pe and is_high_roe and div_yield < 0.01:
         return "growth"
     return "balanced"
+
+
+# ============================================================
+# WF4: Portfolio Construction (Pension Fund Principles)
+# ============================================================
+
+def calculate_signal_weights(
+    signals: list,
+    max_position_pct: float = 0.05,
+    max_sector_pct: float = 0.25,
+    cash_reserve_pct: float = 0.05,
+    sector_map: dict = None,
+) -> dict:
+    """Calculate target portfolio weights from signal results.
+
+    Three-pass allocation algorithm (pension fund principles):
+    1. Raw score-based allocation: strong_buy (3x), buy (2x), others excluded
+    2. Position cap enforcement: max 5% per stock, excess redistributed
+    3. Sector cap enforcement: max 25% per sector, excess redistributed
+
+    Args:
+        signals: List of dicts with keys:
+            'symbol', 'signal_strength', 'combined_signal_score'
+        max_position_pct: Maximum weight per stock (default: 5%).
+        max_sector_pct: Maximum weight per sector (default: 25%).
+        cash_reserve_pct: Target cash reserve (default: 5%).
+        sector_map: Dict mapping symbol -> GICS sector. If None, no sector cap.
+
+    Returns:
+        Dict mapping symbol -> target_weight (0.0 to max_position_pct).
+        Weights sum to <= (1 - cash_reserve_pct).
+    """
+    if not signals:
+        return {}
+
+    # Multipliers: only strong_buy and buy get allocation
+    multipliers = {"strong_buy": 3.0, "buy": 2.0}
+
+    # Pass 1: Raw score-based allocation
+    raw_weights = {}
+    for s in signals:
+        strength = s.get("signal_strength", "hold")
+        mult = multipliers.get(strength, 0.0)
+        if mult > 0:
+            score = max(s.get("combined_signal_score", 50.0), 1.0)
+            raw_weights[s["symbol"]] = mult * score
+
+    if not raw_weights:
+        return {}
+
+    # Normalize to sum to investable fraction
+    investable = 1.0 - cash_reserve_pct
+    total_raw = sum(raw_weights.values())
+    weights = {sym: (w / total_raw) * investable for sym, w in raw_weights.items()}
+
+    # Pass 2: Position cap enforcement (iterate until converged)
+    for _ in range(10):  # Max 10 iterations, typically converges in 2-3
+        excess = 0.0
+        uncapped = {}
+        for sym, w in weights.items():
+            if w > max_position_pct:
+                excess += w - max_position_pct
+                weights[sym] = max_position_pct
+            else:
+                uncapped[sym] = w
+
+        if excess <= 1e-8:
+            break
+
+        # Redistribute excess proportionally among uncapped positions
+        uncapped_total = sum(uncapped.values())
+        if uncapped_total <= 0:
+            break
+        for sym in uncapped:
+            weights[sym] += excess * (uncapped[sym] / uncapped_total)
+
+    # Pass 3: Sector cap enforcement
+    if sector_map:
+        for _ in range(10):
+            # Calculate sector totals
+            sector_weights = {}
+            for sym, w in weights.items():
+                sector = sector_map.get(sym, "Unknown")
+                sector_weights.setdefault(sector, 0.0)
+                sector_weights[sector] += w
+
+            excess_sectors = {
+                s: w - max_sector_pct
+                for s, w in sector_weights.items()
+                if w > max_sector_pct
+            }
+            if not excess_sectors:
+                break
+
+            total_excess = 0.0
+            for sector, excess in excess_sectors.items():
+                # Proportionally reduce positions in this sector
+                sector_syms = [
+                    sym for sym, w in weights.items()
+                    if sector_map.get(sym, "Unknown") == sector and w > 0
+                ]
+                if not sector_syms:
+                    continue
+                sector_total = sum(weights[sym] for sym in sector_syms)
+                if sector_total <= 0:
+                    continue
+                for sym in sector_syms:
+                    reduction = excess * (weights[sym] / sector_total)
+                    weights[sym] -= reduction
+                    total_excess += reduction
+
+            # Redistribute to non-overweight sectors
+            other_syms = [
+                sym for sym, w in weights.items()
+                if sector_map.get(sym, "Unknown") not in excess_sectors
+                and w > 0 and w < max_position_pct
+            ]
+            other_total = sum(weights[sym] for sym in other_syms)
+            if other_total > 0 and total_excess > 0:
+                for sym in other_syms:
+                    addition = total_excess * (weights[sym] / other_total)
+                    weights[sym] = min(weights[sym] + addition, max_position_pct)
+
+    # Clean up: remove zero/tiny weights
+    weights = {sym: round(w, 6) for sym, w in weights.items() if w > 1e-6}
+    return weights
+
+
+def estimate_transaction_cost(
+    quantity: int,
+    price: float,
+    spread_bps: float = 5.0,
+    commission_per_share: float = 0.005,
+    exchange_fee_bps: float = 3.0,
+    impact_bps_per_1k: float = 0.1,
+) -> float:
+    """Estimate total transaction cost in basis points (Brenndoerfer model).
+
+    Components:
+    - Commission: commission_per_share / price * 10000 bps
+    - Exchange fee: flat bps
+    - Half-spread: spread_bps / 2
+    - Market impact: impact_bps_per_1k * (order_value / 1000)
+
+    Args:
+        quantity: Number of shares (absolute, positive).
+        price: Estimated execution price per share.
+        spread_bps: Bid-ask spread in basis points.
+        commission_per_share: Per-share commission in USD (default: $0.005).
+        exchange_fee_bps: Exchange fee in basis points (default: 3.0).
+        impact_bps_per_1k: Market impact per $1000 order value (default: 0.1).
+
+    Returns:
+        Estimated total cost in basis points. Returns 0.0 for invalid inputs.
+    """
+    if quantity <= 0 or price <= 0:
+        return 0.0
+
+    # Commission component (bps)
+    commission_bps = (commission_per_share / price) * 10000
+
+    # Half-spread component (bps)
+    half_spread_bps = spread_bps / 2.0
+
+    # Market impact component (bps)
+    order_value = quantity * price
+    impact_bps = impact_bps_per_1k * (order_value / 1000.0)
+
+    total_bps = commission_bps + exchange_fee_bps + half_spread_bps + impact_bps
+    return round(total_bps, 4)

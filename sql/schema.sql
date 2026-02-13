@@ -193,3 +193,23 @@ CREATE TABLE IF NOT EXISTS signal_results (
 CREATE INDEX IF NOT EXISTS idx_signal_results_run_date ON signal_results(run_date);
 CREATE INDEX IF NOT EXISTS idx_signal_results_symbol ON signal_results(symbol);
 CREATE INDEX IF NOT EXISTS idx_signal_results_strength ON signal_results(run_date, signal_strength);
+
+-- ============================================================
+-- Rebalancing Runs (WF4: Portfolio & Rebalancing)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS rebalancing_runs (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL UNIQUE,
+    total_portfolio_value DECIMAL(14,2),
+    cash_value DECIMAL(14,2),
+    invested_value DECIMAL(14,2),
+    num_signals_input INT,
+    num_target_positions INT,
+    num_buy_orders INT,
+    num_sell_orders INT,
+    total_estimated_cost DECIMAL(10,4),
+    report_s3_path TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rebalancing_runs_date ON rebalancing_runs(run_date);
