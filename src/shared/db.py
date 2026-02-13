@@ -376,6 +376,148 @@ def store_signal_results(run_date: str, signal_results: list, run_metadata: dict
     return rows_inserted
 
 
+def get_latest_signal_results(run_date: str = "") -> list:
+    """Get the latest WF3 signal results for WF4 portfolio construction.
+
+    Args:
+        run_date: Target signal run date (YYYY-MM-DD). Empty = latest available.
+
+    Returns:
+        List of tuples (symbol, combined_signal_score, signal_strength,
+        wf2_quintile, technical_score, fundamental_score, data_quality).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        if not run_date:
+            cursor.execute("SELECT MAX(run_date) FROM signal_runs")
+            result = cursor.fetchone()
+            if not result or not result[0]:
+                return []
+            run_date = str(result[0])
+
+        cursor.execute(
+            """SELECT symbol, combined_signal_score, signal_strength,
+                      wf2_quintile, technical_score, fundamental_score,
+                      data_quality
+               FROM signal_results
+               WHERE run_date = %s
+               ORDER BY combined_signal_score DESC""",
+            (run_date,),
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_current_positions() -> list:
+    """Get all current portfolio positions.
+
+    Returns:
+        List of tuples (symbol, shares, avg_cost, current_price, sector).
+        Empty list if no positions (initial state).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """SELECT symbol, shares, avg_cost, current_price, sector
+               FROM positions
+               ORDER BY symbol ASC"""
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def store_rebalancing_results(
+    run_date: str,
+    run_metadata: dict,
+    trade_orders: list,
+) -> int:
+    """Store WF4 rebalancing run metadata and proposed trade orders.
+
+    Writes to rebalancing_runs (one row) and trades (one per order).
+    Uses UPSERT for idempotency on Flyte retries.
+
+    Args:
+        run_date: Rebalancing run date (YYYY-MM-DD).
+        run_metadata: Dict with total_portfolio_value, cash_value, etc.
+        trade_orders: List of TradeOrder dataclass instances.
+
+    Returns:
+        Number of trade order rows inserted.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows_inserted = 0
+
+    try:
+        # Upsert rebalancing run metadata
+        cursor.execute(
+            """INSERT INTO rebalancing_runs
+                   (run_date, total_portfolio_value, cash_value, invested_value,
+                    num_signals_input, num_target_positions, num_buy_orders,
+                    num_sell_orders, total_estimated_cost, report_s3_path)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (run_date) DO UPDATE SET
+                   total_portfolio_value = EXCLUDED.total_portfolio_value,
+                   cash_value = EXCLUDED.cash_value,
+                   invested_value = EXCLUDED.invested_value,
+                   num_signals_input = EXCLUDED.num_signals_input,
+                   num_target_positions = EXCLUDED.num_target_positions,
+                   num_buy_orders = EXCLUDED.num_buy_orders,
+                   num_sell_orders = EXCLUDED.num_sell_orders,
+                   total_estimated_cost = EXCLUDED.total_estimated_cost,
+                   report_s3_path = EXCLUDED.report_s3_path,
+                   created_at = NOW()""",
+            (
+                run_date,
+                run_metadata.get("total_portfolio_value", 0.0),
+                run_metadata.get("cash_value", 0.0),
+                run_metadata.get("invested_value", 0.0),
+                run_metadata.get("num_signals_input", 0),
+                run_metadata.get("num_target_positions", 0),
+                run_metadata.get("num_buy_orders", 0),
+                run_metadata.get("num_sell_orders", 0),
+                run_metadata.get("total_estimated_cost", 0.0),
+                run_metadata.get("report_s3_path", ""),
+            ),
+        )
+
+        # Insert proposed trade orders
+        for order in trade_orders:
+            cursor.execute(
+                """INSERT INTO trades
+                       (date, symbol, side, quantity, price, commission,
+                        spread_cost, impact_cost, reason)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    run_date,
+                    order.symbol,
+                    order.side,
+                    order.quantity,
+                    order.estimated_price,
+                    0.0,  # Detailed cost breakdown not stored separately yet
+                    0.0,
+                    0.0,
+                    order.reason,
+                ),
+            )
+            rows_inserted += 1
+
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    return rows_inserted
+
+
 def get_latest_market_data(symbol: str, days: int = 30) -> list:
     """Get the latest N days of market data for a symbol.
 

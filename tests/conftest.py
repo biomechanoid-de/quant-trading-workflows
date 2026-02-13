@@ -1,8 +1,9 @@
 """Shared test fixtures for Quant Trading Workflows.
 
 Provides reusable test data for WF1 (MarketDataBatch),
-WF2 (ScreeningConfig, StockMetrics, price_data), and
-WF3 (TechnicalSignals, FundamentalSignals, screening_context)
+WF2 (ScreeningConfig, StockMetrics, price_data),
+WF3 (TechnicalSignals, FundamentalSignals, screening_context), and
+WF4 (signal_context, portfolio_state, price_data for rebalancing)
 without network or database access.
 """
 
@@ -261,3 +262,81 @@ def sample_fundamental_signals():
             fundamental_score=58.0, fundamental_signal="value",
         ),
     ]
+
+
+# ============================================================
+# WF4: Portfolio & Rebalancing Fixtures
+# ============================================================
+
+@pytest.fixture
+def sample_wf4_signal_context():
+    """Dict[str, str] mimicking WF4 load_signal_context output.
+
+    5 symbols with mixed signal strengths for portfolio construction testing.
+    """
+    import json
+    return {
+        "AAPL": json.dumps({
+            "combined_signal_score": 72.5, "signal_strength": "buy",
+            "wf2_quintile": 1, "technical_score": 68.0,
+            "fundamental_score": 77.0, "data_quality": "complete",
+        }),
+        "MSFT": json.dumps({
+            "combined_signal_score": 76.0, "signal_strength": "strong_buy",
+            "wf2_quintile": 1, "technical_score": 72.0,
+            "fundamental_score": 80.0, "data_quality": "complete",
+        }),
+        "NVDA": json.dumps({
+            "combined_signal_score": 65.5, "signal_strength": "buy",
+            "wf2_quintile": 1, "technical_score": 70.0,
+            "fundamental_score": 61.0, "data_quality": "complete",
+        }),
+        "AMZN": json.dumps({
+            "combined_signal_score": 45.0, "signal_strength": "hold",
+            "wf2_quintile": 2, "technical_score": 40.0,
+            "fundamental_score": 50.0, "data_quality": "partial",
+        }),
+        "JPM": json.dumps({
+            "combined_signal_score": 62.0, "signal_strength": "buy",
+            "wf2_quintile": 2, "technical_score": 58.0,
+            "fundamental_score": 66.0, "data_quality": "complete",
+        }),
+    }
+
+
+@pytest.fixture
+def sample_portfolio_state_empty():
+    """Empty portfolio (initial state with EUR 25,000 cash)."""
+    import json
+    return {
+        "cash": "25000.0",
+        "positions_json": json.dumps([]),
+        "total_value": "25000.0",
+    }
+
+
+@pytest.fixture
+def sample_portfolio_state_with_positions():
+    """Portfolio with existing positions."""
+    import json
+    return {
+        "cash": "5000.0",
+        "positions_json": json.dumps([
+            {"symbol": "AAPL", "shares": 5, "avg_cost": 180.0, "current_price": 195.0, "sector": "Technology"},
+            {"symbol": "MSFT", "shares": 3, "avg_cost": 400.0, "current_price": 415.0, "sector": "Technology"},
+        ]),
+        "total_value": "7220.0",
+    }
+
+
+@pytest.fixture
+def sample_wf4_price_data():
+    """Price data for WF4 trade generation."""
+    import json
+    return {
+        "AAPL": json.dumps({"close": 195.50, "spread_bps": 5.2}),
+        "MSFT": json.dumps({"close": 415.20, "spread_bps": 3.8}),
+        "NVDA": json.dumps({"close": 850.00, "spread_bps": 4.5}),
+        "JPM": json.dumps({"close": 195.00, "spread_bps": 6.0}),
+        "AMZN": json.dumps({"close": 185.00, "spread_bps": 4.0}),
+    }
