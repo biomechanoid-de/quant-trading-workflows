@@ -20,7 +20,7 @@ from src.shared.config import (
     WF3_SMA_SHORT, WF3_SMA_LONG,
     WF4_INITIAL_CAPITAL, WF4_MAX_POSITION_PCT, WF4_MAX_SECTOR_PCT,
     WF4_CASH_RESERVE_PCT, WF4_COMMISSION_PER_SHARE, WF4_EXCHANGE_FEE_BPS,
-    WF4_IMPACT_BPS_PER_1K, WF4_MIN_TRADE_VALUE,
+    WF4_IMPACT_BPS_PER_1K, WF4_MIN_TRADE_VALUE, WF4_PAPER_TRADING_ENABLED,
 )
 from src.wf1_data_ingestion.workflow import data_ingestion_workflow
 from src.wf2_universe_screening.workflow import universe_screening_workflow
@@ -82,6 +82,7 @@ wf4_prod_weekly = LaunchPlan.get_or_create(
         "exchange_fee_bps": WF4_EXCHANGE_FEE_BPS,
         "impact_bps_per_1k": WF4_IMPACT_BPS_PER_1K,
         "min_trade_value": WF4_MIN_TRADE_VALUE,
+        "paper_trading": WF4_PAPER_TRADING_ENABLED,
     },
     schedule=CronSchedule(schedule="0 16 * * 0"),
 )

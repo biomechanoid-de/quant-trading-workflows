@@ -1,14 +1,19 @@
 """Tests for WF4: Portfolio & Rebalancing.
 
-Tests analytics functions (calculate_signal_weights, estimate_transaction_cost),
-task logic (target weights, trade orders, report generation), and data models.
+Tests analytics functions (calculate_signal_weights, estimate_transaction_cost,
+calculate_cost_breakdown), task logic (target weights, trade orders, report
+generation, paper trading, portfolio snapshots), and data models.
 No database or network access — all functions are tested with fixtures.
 """
 
 import json
 import pytest
 
-from src.shared.analytics import calculate_signal_weights, estimate_transaction_cost
+from src.shared.analytics import (
+    calculate_signal_weights,
+    estimate_transaction_cost,
+    calculate_cost_breakdown,
+)
 from src.shared.models import TradeOrder
 
 
@@ -807,3 +812,392 @@ class TestSymbolSectors:
         assert counts["Utilities"] == 3
         assert counts["Real Estate"] == 3
         assert counts["Materials"] == 3
+
+
+# ============================================================
+# Analytics: calculate_cost_breakdown (Phase 4)
+# ============================================================
+
+class TestCalculateCostBreakdown:
+    """Test transaction cost decomposition into USD components."""
+
+    def test_basic_breakdown(self):
+        """Cost breakdown should return positive components."""
+        result = calculate_cost_breakdown(
+            quantity=10, price=200.0, spread_bps=5.0,
+            commission_per_share=0.005, exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+        assert result["commission"] > 0
+        assert result["spread_cost"] > 0
+        assert result["impact_cost"] > 0
+        assert result["total_cost"] > 0
+        # Commission: 0.005 * 10 = 0.05
+        assert abs(result["commission"] - 0.05) < 0.01
+
+    def test_zero_inputs_return_zeros(self):
+        """Zero or negative inputs should return all zeros."""
+        result = calculate_cost_breakdown(quantity=0, price=200.0)
+        assert result["total_cost"] == 0.0
+        assert result["commission"] == 0.0
+
+        result2 = calculate_cost_breakdown(quantity=10, price=0.0)
+        assert result2["total_cost"] == 0.0
+
+    def test_total_equals_sum_of_components(self):
+        """Total cost should equal sum of individual components."""
+        result = calculate_cost_breakdown(
+            quantity=100, price=150.0, spread_bps=4.0,
+            commission_per_share=0.005, exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+        component_sum = (
+            result["commission"] + result["spread_cost"] + result["impact_cost"]
+        )
+        assert abs(result["total_cost"] - component_sum) < 0.01
+
+
+# ============================================================
+# Task: execute_paper_trades (Phase 4)
+# ============================================================
+
+class TestExecutePaperTrades:
+    """Test paper trade execution logic."""
+
+    def test_disabled_returns_immediately(
+        self, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """When paper_trading=False, task returns disabled status."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        result = execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=False,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        assert result["status"] == "disabled"
+        assert result["num_trades_executed"] == "0"
+
+    def test_buy_orders_deduct_cash(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """BUY orders should deduct cost + fees from cash."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=3)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=3)
+
+        result = execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        assert result["status"] == "executed"
+        cash_after = float(result["cash_after"])
+        assert cash_after < 25000.0  # Cash decreased
+        assert cash_after > 0  # Still positive
+        assert int(result["num_trades_executed"]) == 3
+
+    def test_sell_orders_add_cash(self, mocker, sample_wf4_price_data):
+        """SELL orders should add proceeds minus fees to cash."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=1)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=1)
+
+        assembled = {
+            "run_date": "2026-02-16",
+            "trade_orders_json": json.dumps([{
+                "symbol": "AAPL", "side": "SELL", "quantity": 5,
+                "estimated_price": 195.0, "estimated_cost_bps": 5.0,
+                "reason": "Exit",
+            }]),
+        }
+        portfolio = {
+            "cash": "5000.0",
+            "positions_json": json.dumps([{
+                "symbol": "AAPL", "shares": 5, "avg_cost": 180.0,
+                "current_price": 195.0, "sector": "Technology",
+            }]),
+            "total_value": "5975.0",
+        }
+
+        result = execute_paper_trades(
+            assembled_result=assembled,
+            portfolio_state=portfolio,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        cash_after = float(result["cash_after"])
+        assert cash_after > 5000.0  # Cash increased from sell
+
+    def test_weighted_average_cost_on_additional_buy(
+        self, mocker, sample_wf4_price_data,
+    ):
+        """Buying more of existing position updates weighted average cost."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=1)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=1)
+
+        assembled = {
+            "run_date": "2026-02-16",
+            "trade_orders_json": json.dumps([{
+                "symbol": "AAPL", "side": "BUY", "quantity": 5,
+                "estimated_price": 195.0, "estimated_cost_bps": 5.0,
+                "reason": "Rebalance",
+            }]),
+        }
+        portfolio = {
+            "cash": "10000.0",
+            "positions_json": json.dumps([{
+                "symbol": "AAPL", "shares": 5, "avg_cost": 180.0,
+                "current_price": 195.0, "sector": "Technology",
+            }]),
+            "total_value": "10975.0",
+        }
+
+        result = execute_paper_trades(
+            assembled_result=assembled,
+            portfolio_state=portfolio,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        positions_after = json.loads(result["positions_after_json"])
+        aapl = next(p for p in positions_after if p["symbol"] == "AAPL")
+        assert aapl["shares"] == 10  # 5 + 5
+        # Weighted avg: (5*180 + 5*195.5) / 10 ≈ 187.75
+        assert aapl["avg_cost"] > 180.0
+        assert aapl["avg_cost"] < 196.0
+
+    def test_full_exit_removes_position(self, mocker, sample_wf4_price_data):
+        """Selling all shares should remove position from output."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=1)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=1)
+
+        assembled = {
+            "run_date": "2026-02-16",
+            "trade_orders_json": json.dumps([{
+                "symbol": "AAPL", "side": "SELL", "quantity": 5,
+                "estimated_price": 195.0, "estimated_cost_bps": 5.0,
+                "reason": "Exit",
+            }]),
+        }
+        portfolio = {
+            "cash": "5000.0",
+            "positions_json": json.dumps([{
+                "symbol": "AAPL", "shares": 5, "avg_cost": 180.0,
+                "current_price": 195.0, "sector": "Technology",
+            }]),
+            "total_value": "5975.0",
+        }
+
+        result = execute_paper_trades(
+            assembled_result=assembled,
+            portfolio_state=portfolio,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        positions_after = json.loads(result["positions_after_json"])
+        symbols = [p["symbol"] for p in positions_after]
+        assert "AAPL" not in symbols  # Fully exited
+
+    def test_insufficient_cash_skips_order(
+        self, mocker, sample_wf4_price_data,
+    ):
+        """Orders exceeding available cash should be skipped."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=0)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=0)
+
+        assembled = {
+            "run_date": "2026-02-16",
+            "trade_orders_json": json.dumps([{
+                "symbol": "NVDA", "side": "BUY", "quantity": 100,
+                "estimated_price": 850.0, "estimated_cost_bps": 5.0,
+                "reason": "NewEntry",
+            }]),
+        }
+        portfolio = {
+            "cash": "100.0",
+            "positions_json": json.dumps([]),
+            "total_value": "100.0",
+        }
+
+        result = execute_paper_trades(
+            assembled_result=assembled,
+            portfolio_state=portfolio,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=100.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        cash_after = float(result["cash_after"])
+        assert cash_after >= 99.0  # Cash barely changed (trade skipped)
+        assert int(result["num_trades_executed"]) == 0
+
+    def test_db_functions_called(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """DB upsert and store functions should be called when paper trading."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mock_upsert = mocker.patch(
+            "src.shared.db.upsert_positions", return_value=3,
+        )
+        mock_store = mocker.patch(
+            "src.shared.db.store_executed_trades", return_value=3,
+        )
+
+        execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        mock_upsert.assert_called_once()
+        mock_store.assert_called_once()
+
+
+# ============================================================
+# Task: snapshot_portfolio (Phase 4)
+# ============================================================
+
+class TestSnapshotPortfolio:
+    """Test portfolio snapshot creation."""
+
+    def test_disabled_returns_message(self):
+        """When paper_trading=False, returns disabled message."""
+        from src.wf4_portfolio_rebalancing.tasks import snapshot_portfolio
+
+        result = snapshot_portfolio(
+            paper_trade_result={"status": "disabled"},
+            paper_trading=False,
+            initial_capital=25000.0,
+        )
+        assert "disabled" in result.lower()
+
+    def test_creates_snapshot_after_execution(
+        self, mocker, sample_paper_trade_result_executed,
+    ):
+        """Should store snapshot to DB after paper trades."""
+        from src.wf4_portfolio_rebalancing.tasks import snapshot_portfolio
+
+        mocker.patch(
+            "src.shared.db.get_latest_portfolio_snapshot", return_value=None,
+        )
+        mock_store = mocker.patch(
+            "src.shared.db.store_portfolio_snapshot", return_value=1,
+        )
+
+        result = snapshot_portfolio(
+            paper_trade_result=sample_paper_trade_result_executed,
+            paper_trading=True,
+            initial_capital=25000.0,
+        )
+
+        mock_store.assert_called_once()
+        assert "2026-02-16" in result
+        assert "EUR" in result
+
+    def test_calculates_pnl_vs_previous(self, mocker):
+        """PnL should be calculated against previous snapshot."""
+        from src.wf4_portfolio_rebalancing.tasks import snapshot_portfolio
+        from datetime import date
+
+        # Previous snapshot had total_value = 25000
+        mocker.patch(
+            "src.shared.db.get_latest_portfolio_snapshot",
+            return_value=(
+                date(2026, 2, 9), 25000.0, 23000.0, 2000.0, 0.0, 0.0, 3,
+            ),
+        )
+        mock_store = mocker.patch(
+            "src.shared.db.store_portfolio_snapshot", return_value=1,
+        )
+
+        paper_result = {
+            "status": "executed",
+            "num_trades_executed": "2",
+            "cash_after": "22500.0",
+            "positions_after_json": json.dumps([{
+                "symbol": "AAPL", "shares": 5, "avg_cost": 190.0,
+                "current_price": 195.0,
+            }]),
+            "total_value_after": "23475.0",
+            "run_date": "2026-02-16",
+        }
+
+        snapshot_portfolio(
+            paper_trade_result=paper_result,
+            paper_trading=True,
+            initial_capital=25000.0,
+        )
+
+        # Check that daily_pnl = 23475 - 25000 = -1525
+        call_kwargs = mock_store.call_args
+        assert call_kwargs[1]["daily_pnl"] == pytest.approx(-1525.0, abs=0.01)
+
+    def test_first_run_pnl_vs_initial_capital(
+        self, mocker, sample_paper_trade_result_executed,
+    ):
+        """First snapshot PnL should be vs initial capital."""
+        from src.wf4_portfolio_rebalancing.tasks import snapshot_portfolio
+
+        mocker.patch(
+            "src.shared.db.get_latest_portfolio_snapshot", return_value=None,
+        )
+        mock_store = mocker.patch(
+            "src.shared.db.store_portfolio_snapshot", return_value=1,
+        )
+
+        snapshot_portfolio(
+            paper_trade_result=sample_paper_trade_result_executed,
+            paper_trading=True,
+            initial_capital=25000.0,
+        )
+
+        call_kwargs = mock_store.call_args
+        # total_value_after = 24969.50, initial = 25000 → PnL < 0
+        assert call_kwargs[1]["daily_pnl"] < 0  # Lost money to costs

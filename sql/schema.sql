@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_market_data_symbol_date ON market_data(symbol, da
 -- ============================================================
 CREATE TABLE IF NOT EXISTS positions (
     id SERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
+    symbol VARCHAR(20) NOT NULL UNIQUE,  -- Phase 4: UNIQUE for ON CONFLICT UPSERT
     shares DECIMAL(12,4) NOT NULL,
     avg_cost DECIMAL(12,4) NOT NULL,
     current_price DECIMAL(12,4),
@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
+
+-- Phase 4 migration (apply manually if table already exists):
+-- ALTER TABLE positions ADD CONSTRAINT positions_symbol_unique UNIQUE (symbol);
 
 -- ============================================================
 -- Trades (WF4: Portfolio & Rebalancing)

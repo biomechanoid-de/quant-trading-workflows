@@ -518,6 +518,194 @@ def store_rebalancing_results(
     return rows_inserted
 
 
+# ============================================================
+# Phase 4: Paper Trading DB Functions
+# ============================================================
+
+
+def upsert_positions(positions_data: list) -> int:
+    """Upsert portfolio positions after paper trade execution.
+
+    Inserts new positions, updates existing ones, deletes fully exited
+    positions (shares=0). Uses ON CONFLICT on symbol UNIQUE constraint.
+
+    Args:
+        positions_data: List of dicts with keys:
+            symbol, shares, avg_cost, current_price, sector
+
+    Returns:
+        Number of rows affected.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows_affected = 0
+
+    try:
+        for pos in positions_data:
+            shares = float(pos["shares"])
+            if shares <= 0:
+                # Full exit: remove position
+                cursor.execute(
+                    "DELETE FROM positions WHERE symbol = %s",
+                    (pos["symbol"],),
+                )
+            else:
+                cursor.execute(
+                    """INSERT INTO positions
+                           (symbol, shares, avg_cost, current_price, sector,
+                            updated_at)
+                       VALUES (%s, %s, %s, %s, %s, NOW())
+                       ON CONFLICT (symbol) DO UPDATE SET
+                           shares = EXCLUDED.shares,
+                           avg_cost = EXCLUDED.avg_cost,
+                           current_price = EXCLUDED.current_price,
+                           sector = EXCLUDED.sector,
+                           updated_at = NOW()""",
+                    (
+                        pos["symbol"],
+                        shares,
+                        float(pos["avg_cost"]),
+                        float(pos.get("current_price", pos["avg_cost"])),
+                        pos.get("sector", ""),
+                    ),
+                )
+            rows_affected += 1
+
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    return rows_affected
+
+
+def store_executed_trades(run_date: str, executed_trades: list) -> int:
+    """Store paper-executed trades with actual cost breakdown.
+
+    Unlike store_rebalancing_results() which stores PROPOSED trades with
+    zero costs, this stores executed paper trades with real commission,
+    spread, and impact costs in USD.
+
+    Args:
+        run_date: Trade execution date (YYYY-MM-DD).
+        executed_trades: List of dicts with keys:
+            symbol, side, quantity, price, commission, spread_cost,
+            impact_cost, reason
+
+    Returns:
+        Number of trade rows inserted.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows_inserted = 0
+
+    try:
+        for trade in executed_trades:
+            cursor.execute(
+                """INSERT INTO trades
+                       (date, symbol, side, quantity, price, commission,
+                        spread_cost, impact_cost, reason)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    run_date,
+                    trade["symbol"],
+                    trade["side"],
+                    trade["quantity"],
+                    trade["price"],
+                    trade["commission"],
+                    trade["spread_cost"],
+                    trade["impact_cost"],
+                    trade["reason"],
+                ),
+            )
+            rows_inserted += 1
+
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    return rows_inserted
+
+
+def store_portfolio_snapshot(
+    snapshot_date: str,
+    total_value: float,
+    cash: float,
+    invested: float,
+    daily_pnl: float,
+    cumulative_dividends: float,
+    num_positions: int,
+) -> int:
+    """Store a portfolio snapshot for performance tracking.
+
+    Uses UPSERT on date for idempotency on Flyte retries.
+
+    Args:
+        snapshot_date: Date string (YYYY-MM-DD).
+        total_value: Total portfolio value (cash + invested).
+        cash: Remaining cash balance.
+        invested: Value of all positions at current prices.
+        daily_pnl: Change in total_value vs. previous snapshot.
+        cumulative_dividends: Total dividends received to date.
+        num_positions: Number of active positions.
+
+    Returns:
+        1 on success.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """INSERT INTO portfolio_snapshots
+                   (date, total_value, cash, invested, daily_pnl,
+                    cumulative_dividends, num_positions)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (date) DO UPDATE SET
+                   total_value = EXCLUDED.total_value,
+                   cash = EXCLUDED.cash,
+                   invested = EXCLUDED.invested,
+                   daily_pnl = EXCLUDED.daily_pnl,
+                   cumulative_dividends = EXCLUDED.cumulative_dividends,
+                   num_positions = EXCLUDED.num_positions""",
+            (snapshot_date, total_value, cash, invested,
+             daily_pnl, cumulative_dividends, num_positions),
+        )
+        conn.commit()
+        return 1
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_latest_portfolio_snapshot():
+    """Get the most recent portfolio snapshot.
+
+    Used by load_current_portfolio to read accurate cash balance
+    after paper trading runs.
+
+    Returns:
+        Tuple (date, total_value, cash, invested, daily_pnl,
+        cumulative_dividends, num_positions) or None if no snapshots.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """SELECT date, total_value, cash, invested, daily_pnl,
+                      cumulative_dividends, num_positions
+               FROM portfolio_snapshots
+               ORDER BY date DESC
+               LIMIT 1"""
+        )
+        return cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def get_latest_market_data(symbol: str, days: int = 30) -> list:
     """Get the latest N days of market data for a symbol.
 

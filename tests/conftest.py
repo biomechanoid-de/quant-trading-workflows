@@ -340,3 +340,73 @@ def sample_wf4_price_data():
         "JPM": json.dumps({"close": 195.00, "spread_bps": 6.0}),
         "AMZN": json.dumps({"close": 185.00, "spread_bps": 4.0}),
     }
+
+
+# ============================================================
+# WF4 Phase 4: Paper Trading Fixtures
+# ============================================================
+
+@pytest.fixture
+def sample_assembled_result_for_paper_trading():
+    """Assembled result with trade orders for paper trading tests."""
+    import json
+    return {
+        "run_date": "2026-02-16",
+        "total_value": "25000.0",
+        "cash_value": "25000.0",
+        "invested_value": "23750.0",
+        "num_signals_input": "5",
+        "num_target_positions": "4",
+        "num_buy_orders": "3",
+        "num_sell_orders": "0",
+        "total_estimated_cost_bps": "15.0",
+        "target_weights_json": json.dumps({
+            "MSFT": 0.05, "AAPL": 0.047, "NVDA": 0.035,
+        }),
+        "exit_symbols_json": "[]",
+        "trade_orders_json": json.dumps([
+            {
+                "symbol": "MSFT", "side": "BUY", "quantity": 2,
+                "estimated_price": 415.0, "estimated_cost_bps": 5.5,
+                "reason": "NewEntry",
+            },
+            {
+                "symbol": "AAPL", "side": "BUY", "quantity": 6,
+                "estimated_price": 195.0, "estimated_cost_bps": 5.0,
+                "reason": "NewEntry",
+            },
+            {
+                "symbol": "NVDA", "side": "BUY", "quantity": 1,
+                "estimated_price": 850.0, "estimated_cost_bps": 4.5,
+                "reason": "NewEntry",
+            },
+        ]),
+        "signal_context_json": "{}",
+    }
+
+
+@pytest.fixture
+def sample_paper_trade_result_executed():
+    """Paper trade result after successful execution."""
+    import json
+    return {
+        "status": "executed",
+        "num_trades_executed": "3",
+        "cash_after": "22069.50",
+        "positions_after_json": json.dumps([
+            {
+                "symbol": "AAPL", "shares": 6, "avg_cost": 195.5,
+                "current_price": 195.5, "sector": "Technology",
+            },
+            {
+                "symbol": "MSFT", "shares": 2, "avg_cost": 415.2,
+                "current_price": 415.2, "sector": "Technology",
+            },
+            {
+                "symbol": "NVDA", "shares": 1, "avg_cost": 850.0,
+                "current_price": 850.0, "sector": "Technology",
+            },
+        ]),
+        "total_value_after": "24969.50",
+        "run_date": "2026-02-16",
+    }

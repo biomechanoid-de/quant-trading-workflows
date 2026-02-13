@@ -124,6 +124,12 @@ WF4_COMMISSION_PER_SHARE = float(os.environ.get("WF4_COMMISSION_PER_SHARE", "0.0
 WF4_EXCHANGE_FEE_BPS = float(os.environ.get("WF4_EXCHANGE_FEE_BPS", "3.0"))    # 3 bps exchange fee
 WF4_IMPACT_BPS_PER_1K = float(os.environ.get("WF4_IMPACT_BPS_PER_1K", "0.1")) # 0.1 bps market impact per $1000
 
+# Phase 4: Paper Trading Mode
+# When True, WF4 simulates trade execution, updates positions table,
+# and takes portfolio snapshots for performance tracking.
+# When False (default), WF4 generates order reports only (Phase 3 behavior).
+WF4_PAPER_TRADING_ENABLED = os.environ.get("WF4_PAPER_TRADING_ENABLED", "false").lower() == "true"
+
 # ============================================================
 # GICS Sector Mapping for PHASE2_SYMBOLS
 # ============================================================
