@@ -547,6 +547,185 @@ class TestGenerateOrderReport:
 
 
 # ============================================================
+# Task: store_rebalancing_to_parquet
+# ============================================================
+
+class TestStoreRebalancingToParquet:
+    """Test Parquet cold-storage for rebalancing results."""
+
+    def _make_assembled_result(self):
+        """Helper to create assembled result for Parquet testing."""
+        return {
+            "run_date": "2026-02-13",
+            "total_value": "25000.0",
+            "cash_value": "25000.0",
+            "invested_value": "23750.0",
+            "num_signals_input": "5",
+            "num_target_positions": "4",
+            "num_buy_orders": "2",
+            "num_sell_orders": "0",
+            "total_estimated_cost_bps": "11.3",
+            "target_weights_json": json.dumps({"MSFT": 0.05, "AAPL": 0.047}),
+            "exit_symbols_json": "[]",
+            "trade_orders_json": json.dumps([
+                {"symbol": "MSFT", "side": "BUY", "quantity": 2,
+                 "estimated_price": 415.0, "estimated_cost_bps": 5.5, "reason": "NewEntry"},
+                {"symbol": "AAPL", "side": "BUY", "quantity": 6,
+                 "estimated_price": 195.0, "estimated_cost_bps": 5.8, "reason": "NewEntry"},
+            ]),
+            "signal_context_json": json.dumps({
+                "MSFT": {"signal_strength": "strong_buy", "combined_signal_score": 76.0},
+                "AAPL": {"signal_strength": "buy", "combined_signal_score": 72.5},
+            }),
+        }
+
+    def test_stores_two_parquet_files(self, mocker):
+        """Should upload target_weights.parquet and trade_orders.parquet."""
+        from src.wf4_portfolio_rebalancing.tasks import store_rebalancing_to_parquet
+
+        mock_client = mocker.MagicMock()
+        mocker.patch(
+            "src.shared.storage.get_s3_client",
+            return_value=mock_client,
+        )
+
+        result = store_rebalancing_to_parquet(assembled_result=self._make_assembled_result())
+
+        assert mock_client.put_object.call_count == 2
+        calls = mock_client.put_object.call_args_list
+        keys = [c.kwargs["Key"] for c in calls]
+        assert any("target_weights.parquet" in k for k in keys)
+        assert any("trade_orders.parquet" in k for k in keys)
+        assert "Stored 2 Parquet files" in result
+
+    def test_hive_partitioned_path(self, mocker):
+        """S3 keys should follow Hive-style partitioning."""
+        from src.wf4_portfolio_rebalancing.tasks import store_rebalancing_to_parquet
+
+        mock_client = mocker.MagicMock()
+        mocker.patch(
+            "src.shared.storage.get_s3_client",
+            return_value=mock_client,
+        )
+
+        store_rebalancing_to_parquet(assembled_result=self._make_assembled_result())
+
+        calls = mock_client.put_object.call_args_list
+        for call in calls:
+            key = call.kwargs["Key"]
+            assert "rebalancing/year=2026/month=02/day=13/" in key
+
+    def test_target_weights_parquet_schema(self, mocker):
+        """Target weights Parquet should contain expected columns."""
+        from src.wf4_portfolio_rebalancing.tasks import store_rebalancing_to_parquet
+        import pyarrow.parquet as pq
+        import io
+
+        captured_bodies = []
+        mock_client = mocker.MagicMock()
+
+        def capture_put(**kwargs):
+            captured_bodies.append((kwargs["Key"], kwargs["Body"]))
+
+        mock_client.put_object.side_effect = capture_put
+        mocker.patch(
+            "src.shared.storage.get_s3_client",
+            return_value=mock_client,
+        )
+
+        store_rebalancing_to_parquet(assembled_result=self._make_assembled_result())
+
+        # Find the target_weights file
+        for key, body in captured_bodies:
+            if "target_weights" in key:
+                table = pq.read_table(io.BytesIO(body))
+                assert "symbol" in table.column_names
+                assert "target_weight" in table.column_names
+                assert "sector" in table.column_names
+                assert "signal_strength" in table.column_names
+                assert "combined_signal_score" in table.column_names
+                assert "run_date" in table.column_names
+                assert len(table) == 2  # MSFT + AAPL
+                break
+        else:
+            pytest.fail("target_weights.parquet not found in uploads")
+
+    def test_trade_orders_parquet_schema(self, mocker):
+        """Trade orders Parquet should contain expected columns."""
+        from src.wf4_portfolio_rebalancing.tasks import store_rebalancing_to_parquet
+        import pyarrow.parquet as pq
+        import io
+
+        captured_bodies = []
+        mock_client = mocker.MagicMock()
+
+        def capture_put(**kwargs):
+            captured_bodies.append((kwargs["Key"], kwargs["Body"]))
+
+        mock_client.put_object.side_effect = capture_put
+        mocker.patch(
+            "src.shared.storage.get_s3_client",
+            return_value=mock_client,
+        )
+
+        store_rebalancing_to_parquet(assembled_result=self._make_assembled_result())
+
+        for key, body in captured_bodies:
+            if "trade_orders" in key:
+                table = pq.read_table(io.BytesIO(body))
+                assert "symbol" in table.column_names
+                assert "side" in table.column_names
+                assert "quantity" in table.column_names
+                assert "estimated_price" in table.column_names
+                assert "estimated_cost_bps" in table.column_names
+                assert "reason" in table.column_names
+                assert len(table) == 2  # MSFT + AAPL
+                break
+        else:
+            pytest.fail("trade_orders.parquet not found in uploads")
+
+    def test_no_data_returns_message(self, mocker):
+        """Empty weights and orders should return 'no data' message."""
+        from src.wf4_portfolio_rebalancing.tasks import store_rebalancing_to_parquet
+
+        mock_client = mocker.MagicMock()
+        mocker.patch(
+            "src.shared.storage.get_s3_client",
+            return_value=mock_client,
+        )
+
+        empty_result = {
+            "run_date": "2026-02-13",
+            "total_value": "0",
+            "cash_value": "0",
+            "target_weights_json": "{}",
+            "trade_orders_json": "[]",
+            "signal_context_json": "{}",
+        }
+        result = store_rebalancing_to_parquet(assembled_result=empty_result)
+
+        assert "No rebalancing data" in result
+        mock_client.put_object.assert_not_called()
+
+    def test_only_weights_no_orders(self, mocker):
+        """Should store weights Parquet even when no trade orders."""
+        from src.wf4_portfolio_rebalancing.tasks import store_rebalancing_to_parquet
+
+        mock_client = mocker.MagicMock()
+        mocker.patch(
+            "src.shared.storage.get_s3_client",
+            return_value=mock_client,
+        )
+
+        result_no_orders = self._make_assembled_result()
+        result_no_orders["trade_orders_json"] = "[]"
+        result = store_rebalancing_to_parquet(assembled_result=result_no_orders)
+
+        assert mock_client.put_object.call_count == 1
+        assert "Stored 1 Parquet files" in result
+
+
+# ============================================================
 # Data Models
 # ============================================================
 

@@ -4,7 +4,7 @@ Pipeline:
     resolve_run_date -> [load_signal_context || load_current_portfolio]
     -> calculate_target_weights -> fetch_current_prices
     -> generate_trade_orders -> assemble_rebalancing_result
-    -> [store_rebalancing_to_db || generate_order_report]
+    -> [store_rebalancing_to_db || store_rebalancing_to_parquet || generate_order_report]
 
 Key design: System generates ORDER REPORTS, not automatic trades.
 You decide whether and how to execute. Like the Norwegian Pension Fund's
@@ -35,6 +35,7 @@ from src.wf4_portfolio_rebalancing.tasks import (
     generate_trade_orders,
     assemble_rebalancing_result,
     store_rebalancing_to_db,
+    store_rebalancing_to_parquet,
     generate_order_report,
 )
 
@@ -116,8 +117,9 @@ def portfolio_rebalancing_workflow(
         signal_context=signal_ctx,
     )
 
-    # Step 6: PARALLEL — Store to DB + Generate report
+    # Step 6: PARALLEL — Store to DB + Store to Parquet + Generate report
     store_result = store_rebalancing_to_db(assembled_result=assembled)
+    store_parquet_result = store_rebalancing_to_parquet(assembled_result=assembled)
     report = generate_order_report(assembled_result=assembled)
 
     return report
