@@ -804,3 +804,60 @@ def estimate_transaction_cost(
 
     total_bps = commission_bps + exchange_fee_bps + half_spread_bps + impact_bps
     return round(total_bps, 4)
+
+
+def calculate_cost_breakdown(
+    quantity: int,
+    price: float,
+    spread_bps: float = 5.0,
+    commission_per_share: float = 0.005,
+    exchange_fee_bps: float = 3.0,
+    impact_bps_per_1k: float = 0.1,
+) -> dict:
+    """Calculate individual transaction cost components in USD.
+
+    Same Brenndoerfer model as estimate_transaction_cost() but returns
+    absolute USD values broken into components for trade accounting.
+
+    Args:
+        quantity: Number of shares (positive).
+        price: Execution price per share.
+        spread_bps: Bid-ask spread in basis points.
+        commission_per_share: Per-share commission USD.
+        exchange_fee_bps: Exchange fee basis points.
+        impact_bps_per_1k: Market impact per $1000 order value.
+
+    Returns:
+        Dict with keys: commission, spread_cost, impact_cost, total_cost
+        (all in USD). Returns all zeros for invalid inputs.
+    """
+    if quantity <= 0 or price <= 0:
+        return {
+            "commission": 0.0,
+            "spread_cost": 0.0,
+            "impact_cost": 0.0,
+            "total_cost": 0.0,
+        }
+
+    order_value = quantity * price
+
+    # Commission: per-share * quantity
+    commission = commission_per_share * quantity
+
+    # Half-spread applied to order value
+    spread_cost = order_value * (spread_bps / 2.0) / 10000.0
+
+    # Exchange fee applied to order value
+    exchange_cost = order_value * exchange_fee_bps / 10000.0
+
+    # Market impact scales with order size
+    impact_cost = order_value * (impact_bps_per_1k * (order_value / 1000.0)) / 10000.0
+
+    total_cost = commission + spread_cost + exchange_cost + impact_cost
+
+    return {
+        "commission": round(commission, 4),
+        "spread_cost": round(spread_cost, 4),
+        "impact_cost": round(exchange_cost + impact_cost, 4),
+        "total_cost": round(total_cost, 4),
+    }

@@ -1,27 +1,29 @@
-"""WF4: Portfolio & Rebalancing - Tasks (Phase 3).
+"""WF4: Portfolio & Rebalancing - Tasks (Phase 4).
 
 Weekly pipeline that reads WF3 signal results, calculates target portfolio
 weights with pension fund principles, estimates transaction costs, generates
 proposed trade orders, and produces a markdown order report to MinIO.
 
+Phase 4 adds paper trading mode: when enabled, simulates trade execution,
+updates the positions table, and takes portfolio snapshots for performance
+tracking. Enables differential rebalancing across runs.
+
 Schedule: Weekly Sunday 16:00 UTC (after WF3 at 12:00 UTC)
 Node: Any Pi 4 Worker
 
-ORDER REPORTS ONLY — does not execute trades automatically.
-# TODO (Phase 4): Add paper trading mode that updates the positions table
-# after each rebalancing run, enabling position tracking and differential
-# order generation across runs. See Position dataclass in shared/models.py.
-
 Tasks:
-1. resolve_run_date: Resolve empty date to latest WF3 signal run
-2. load_signal_context: Load WF3 signal results from PostgreSQL
-3. load_current_portfolio: Load current positions (empty on first run)
-4. calculate_target_weights: Compute target weights with constraints
-5. fetch_current_prices: Get latest close prices + spreads
-6. generate_trade_orders: Diff current vs target, create TradeOrder list
-7. assemble_rebalancing_result: Package all results for storage/reporting
-8. store_rebalancing_to_db: Write to rebalancing_runs + trades tables
-9. generate_order_report: Create markdown report and upload to MinIO
+ 1. resolve_run_date: Resolve empty date to latest WF3 signal run
+ 2. load_signal_context: Load WF3 signal results from PostgreSQL
+ 3. load_current_portfolio: Load current positions (reads from DB + snapshots)
+ 4. calculate_target_weights: Compute target weights with constraints
+ 5. fetch_current_prices: Get latest close prices + spreads
+ 6. generate_trade_orders: Diff current vs target, create TradeOrder list
+ 7. assemble_rebalancing_result: Package all results for storage/reporting
+ 8. store_rebalancing_to_db: Write to rebalancing_runs + trades tables
+ 9. store_rebalancing_to_parquet: Write Parquet cold-storage to MinIO
+10. generate_order_report: Create markdown report and upload to MinIO
+11. execute_paper_trades: Simulate fills, update positions table (Phase 4)
+12. snapshot_portfolio: Take portfolio snapshot for tracking (Phase 4)
 """
 
 from typing import Dict, List
@@ -125,9 +127,9 @@ def load_current_portfolio(initial_capital: float) -> Dict[str, str]:
     On first run (empty positions table), returns initial_capital as cash
     with no positions.
 
-    # TODO (Phase 4): When paper trading is enabled, positions table will
-    # be populated by previous WF4 runs, and this task will return actual
-    # portfolio state with positions and remaining cash.
+    When paper trading has been active (positions populated by previous
+    WF4 runs), reads accurate cash balance from the latest portfolio
+    snapshot instead of the naive initial_capital - invested calculation.
 
     Args:
         initial_capital: Starting capital in EUR (default: 25000).
@@ -139,7 +141,7 @@ def load_current_portfolio(initial_capital: float) -> Dict[str, str]:
         - "total_value": str(total portfolio value)
     """
     import json
-    from src.shared.db import get_current_positions
+    from src.shared.db import get_current_positions, get_latest_portfolio_snapshot
 
     positions = get_current_positions()
 
@@ -151,7 +153,7 @@ def load_current_portfolio(initial_capital: float) -> Dict[str, str]:
             "total_value": str(initial_capital),
         }
 
-    # Calculate total value from positions + infer remaining cash
+    # Calculate invested value from positions
     position_list = []
     invested_value = 0.0
     for symbol, shares, avg_cost, current_price, sector in positions:
@@ -166,8 +168,15 @@ def load_current_portfolio(initial_capital: float) -> Dict[str, str]:
         })
         invested_value += shares_f * price_f
 
-    # Cash = initial_capital - invested (simplified for order-report-only mode)
-    cash = max(0.0, initial_capital - invested_value)
+    # Read cash from latest portfolio snapshot (accurate after paper trades)
+    snapshot = get_latest_portfolio_snapshot()
+    if snapshot:
+        # snapshot: (date, total_value, cash, invested, daily_pnl, ...)
+        cash = float(snapshot[2])
+    else:
+        # Fallback: no snapshots yet (paper trading never ran)
+        cash = max(0.0, initial_capital - invested_value)
+
     total_value = cash + invested_value
 
     return {
@@ -893,6 +902,296 @@ def store_rebalancing_to_parquet(assembled_result: Dict[str, str]) -> str:
 
     return f"Stored {len(stored_files)} Parquet files: {', '.join(stored_files)}"
 
+
+# ============================================================
+# Task 11: Execute Paper Trades (Phase 4)
+# ============================================================
+
+@task(
+    requests=Resources(cpu="300m", mem="256Mi"),
+    limits=Resources(cpu="500m", mem="512Mi"),
+)
+def execute_paper_trades(
+    assembled_result: Dict[str, str],
+    portfolio_state: Dict[str, str],
+    price_data: Dict[str, str],
+    paper_trading: bool,
+    initial_capital: float,
+    commission_per_share: float,
+    exchange_fee_bps: float,
+    impact_bps_per_1k: float,
+) -> Dict[str, str]:
+    """Execute paper trades: simulate fills and update positions/trades tables.
+
+    When paper_trading=False, returns immediately with disabled status
+    (Phase 3 behavior preserved).
+
+    When True, processes each trade order:
+    - BUY: deduct (quantity * price + transaction_costs) from cash
+    - SELL: add (quantity * price - transaction_costs) to cash
+    - Update positions with weighted average cost tracking
+    - Store executed trades with actual cost breakdown to DB
+    - Upsert positions to DB
+
+    Args:
+        assembled_result: Dict from assemble_rebalancing_result (contains
+            trade_orders_json, run_date).
+        portfolio_state: Dict from load_current_portfolio (contains cash,
+            positions_json, total_value).
+        price_data: Dict from fetch_current_prices (symbol -> JSON price info).
+        paper_trading: Enable paper trade execution.
+        initial_capital: Initial capital for first-run cash calculation.
+        commission_per_share: Per-share commission USD.
+        exchange_fee_bps: Exchange fee bps.
+        impact_bps_per_1k: Market impact per $1000.
+
+    Returns:
+        Dict[str, str] with keys:
+        - "status": "executed" or "disabled"
+        - "num_trades_executed": str
+        - "cash_after": str
+        - "positions_after_json": JSON array of updated position dicts
+        - "total_value_after": str
+        - "run_date": str
+    """
+    import json
+
+    if not paper_trading:
+        return {
+            "status": "disabled",
+            "num_trades_executed": "0",
+            "cash_after": portfolio_state.get("cash", str(initial_capital)),
+            "positions_after_json": portfolio_state.get("positions_json", "[]"),
+            "total_value_after": portfolio_state.get(
+                "total_value", str(initial_capital)
+            ),
+            "run_date": assembled_result.get("run_date", ""),
+        }
+
+    from src.shared.analytics import calculate_cost_breakdown
+    from src.shared.db import upsert_positions, store_executed_trades
+    from src.shared.config import SYMBOL_SECTORS
+
+    run_date = assembled_result.get("run_date", "")
+    orders = json.loads(assembled_result.get("trade_orders_json", "[]"))
+    cash = float(portfolio_state.get("cash", str(initial_capital)))
+    current_positions = json.loads(
+        portfolio_state.get("positions_json", "[]")
+    )
+
+    # Build mutable positions map: symbol -> {shares, avg_cost, ...}
+    pos_map = {}
+    for p in current_positions:
+        pos_map[p["symbol"]] = {
+            "shares": float(p["shares"]),
+            "avg_cost": float(p["avg_cost"]),
+            "current_price": float(p.get("current_price", p["avg_cost"])),
+            "sector": p.get("sector", ""),
+        }
+
+    executed_trades = []
+
+    for order in orders:
+        symbol = order["symbol"]
+        side = order["side"]
+        quantity = int(order["quantity"])
+        price = float(order["estimated_price"])
+
+        # Use price_data for more current pricing
+        if symbol in price_data:
+            price_info = json.loads(price_data[symbol])
+            price = price_info.get("close", price)
+            spread_bps = price_info.get("spread_bps", 5.0)
+        else:
+            spread_bps = 5.0
+
+        # Calculate cost breakdown in USD
+        costs = calculate_cost_breakdown(
+            quantity=quantity,
+            price=price,
+            spread_bps=spread_bps,
+            commission_per_share=commission_per_share,
+            exchange_fee_bps=exchange_fee_bps,
+            impact_bps_per_1k=impact_bps_per_1k,
+        )
+
+        order_value = quantity * price
+
+        if side == "BUY":
+            total_cost = order_value + costs["total_cost"]
+
+            # Skip if insufficient cash
+            if total_cost > cash:
+                continue
+
+            cash -= total_cost
+
+            # Update position with weighted average cost
+            if symbol in pos_map:
+                existing = pos_map[symbol]
+                old_shares = existing["shares"]
+                old_cost = existing["avg_cost"]
+                new_shares = old_shares + quantity
+                new_avg_cost = (
+                    (old_shares * old_cost + quantity * price) / new_shares
+                )
+                pos_map[symbol]["shares"] = new_shares
+                pos_map[symbol]["avg_cost"] = round(new_avg_cost, 4)
+                pos_map[symbol]["current_price"] = price
+            else:
+                pos_map[symbol] = {
+                    "shares": float(quantity),
+                    "avg_cost": round(price, 4),
+                    "current_price": price,
+                    "sector": SYMBOL_SECTORS.get(symbol, ""),
+                }
+
+        elif side == "SELL":
+            if symbol not in pos_map or pos_map[symbol]["shares"] <= 0:
+                continue
+
+            actual_qty = min(quantity, int(pos_map[symbol]["shares"]))
+            proceeds = actual_qty * price - costs["total_cost"]
+            cash += proceeds
+
+            pos_map[symbol]["shares"] -= actual_qty
+            pos_map[symbol]["current_price"] = price
+
+            # Mark fully exited positions
+            if pos_map[symbol]["shares"] <= 0:
+                pos_map[symbol]["shares"] = 0
+
+        executed_trades.append({
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "price": round(price, 4),
+            "commission": costs["commission"],
+            "spread_cost": costs["spread_cost"],
+            "impact_cost": costs["impact_cost"],
+            "reason": order.get("reason", ""),
+        })
+
+    # Prepare positions for DB upsert (includes exits with shares=0)
+    positions_for_db = []
+    positions_after = []
+    for symbol, pos in sorted(pos_map.items()):
+        entry = {
+            "symbol": symbol,
+            "shares": pos["shares"],
+            "avg_cost": pos["avg_cost"],
+            "current_price": pos["current_price"],
+            "sector": pos.get("sector", ""),
+        }
+        positions_for_db.append(entry)
+        if pos["shares"] > 0:
+            positions_after.append(entry)
+
+    # Persist to database
+    if positions_for_db:
+        upsert_positions(positions_for_db)
+    if executed_trades:
+        store_executed_trades(run_date, executed_trades)
+
+    # Calculate totals
+    invested_after = sum(
+        p["shares"] * p["current_price"] for p in positions_after
+    )
+    total_value_after = cash + invested_after
+
+    return {
+        "status": "executed",
+        "num_trades_executed": str(len(executed_trades)),
+        "cash_after": str(round(cash, 2)),
+        "positions_after_json": json.dumps(positions_after),
+        "total_value_after": str(round(total_value_after, 2)),
+        "run_date": run_date,
+    }
+
+
+# ============================================================
+# Task 12: Portfolio Snapshot (Phase 4)
+# ============================================================
+
+@task(
+    requests=Resources(cpu="100m", mem="128Mi"),
+    limits=Resources(cpu="200m", mem="256Mi"),
+)
+def snapshot_portfolio(
+    paper_trade_result: Dict[str, str],
+    paper_trading: bool,
+    initial_capital: float,
+) -> str:
+    """Take a portfolio snapshot for performance tracking.
+
+    When paper_trading=False, returns immediately with no DB writes.
+    When True, calculates PnL vs. previous snapshot and stores to
+    portfolio_snapshots table.
+
+    Args:
+        paper_trade_result: Dict from execute_paper_trades.
+        paper_trading: Enable snapshot writing.
+        initial_capital: For first-run PnL baseline.
+
+    Returns:
+        Summary string.
+    """
+    if not paper_trading:
+        return "Paper trading disabled — no snapshot taken."
+
+    import json
+    from src.shared.db import (
+        store_portfolio_snapshot,
+        get_latest_portfolio_snapshot,
+    )
+
+    status = paper_trade_result.get("status", "disabled")
+    if status != "executed":
+        return "No paper trades executed — no snapshot taken."
+
+    run_date = paper_trade_result.get("run_date", "")
+    cash = float(paper_trade_result.get("cash_after", "0"))
+    total_value = float(paper_trade_result.get("total_value_after", "0"))
+    invested = total_value - cash
+    positions_after = json.loads(
+        paper_trade_result.get("positions_after_json", "[]")
+    )
+    num_positions = len(positions_after)
+
+    # Calculate PnL vs. previous snapshot
+    prev_snapshot = get_latest_portfolio_snapshot()
+    if prev_snapshot and str(prev_snapshot[0]) != run_date:
+        prev_total = float(prev_snapshot[1])
+        daily_pnl = total_value - prev_total
+        cumulative_dividends = (
+            float(prev_snapshot[5]) if prev_snapshot[5] else 0.0
+        )
+    else:
+        # First snapshot or same-day re-run
+        daily_pnl = total_value - initial_capital
+        cumulative_dividends = 0.0
+
+    store_portfolio_snapshot(
+        snapshot_date=run_date,
+        total_value=total_value,
+        cash=cash,
+        invested=invested,
+        daily_pnl=daily_pnl,
+        cumulative_dividends=cumulative_dividends,
+        num_positions=num_positions,
+    )
+
+    return (
+        f"Portfolio snapshot for {run_date}: "
+        f"value=EUR {total_value:,.2f}, cash=EUR {cash:,.2f}, "
+        f"invested=EUR {invested:,.2f}, PnL=EUR {daily_pnl:,.2f}, "
+        f"positions={num_positions}"
+    )
+
+
+# ============================================================
+# Helper: Upload Report to MinIO
+# ============================================================
 
 def _upload_report_to_minio(report: str, run_date: str) -> str:
     """Upload markdown report to MinIO (helper function).

@@ -1,17 +1,15 @@
-"""WF4: Portfolio & Rebalancing - Workflow (Phase 3).
+"""WF4: Portfolio & Rebalancing - Workflow (Phase 4).
 
 Pipeline:
     resolve_run_date -> [load_signal_context || load_current_portfolio]
     -> calculate_target_weights -> fetch_current_prices
     -> generate_trade_orders -> assemble_rebalancing_result
     -> [store_rebalancing_to_db || store_rebalancing_to_parquet || generate_order_report]
+    -> execute_paper_trades -> snapshot_portfolio
 
-Key design: System generates ORDER REPORTS, not automatic trades.
-You decide whether and how to execute. Like the Norwegian Pension Fund's
-investment committee approach.
-
-# TODO (Phase 4): Add paper trading mode that executes simulated trades,
-# updates the positions table, and tracks portfolio performance over time.
+Key design: System generates ORDER REPORTS. When paper_trading=True,
+also simulates trade execution, updates positions, and tracks performance.
+Like the Norwegian Pension Fund's investment committee approach.
 """
 
 from flytekit import workflow
@@ -25,6 +23,7 @@ from src.shared.config import (
     WF4_EXCHANGE_FEE_BPS,
     WF4_IMPACT_BPS_PER_1K,
     WF4_MIN_TRADE_VALUE,
+    WF4_PAPER_TRADING_ENABLED,
 )
 from src.wf4_portfolio_rebalancing.tasks import (
     resolve_run_date,
@@ -37,6 +36,8 @@ from src.wf4_portfolio_rebalancing.tasks import (
     store_rebalancing_to_db,
     store_rebalancing_to_parquet,
     generate_order_report,
+    execute_paper_trades,
+    snapshot_portfolio,
 )
 
 
@@ -51,6 +52,7 @@ def portfolio_rebalancing_workflow(
     exchange_fee_bps: float = WF4_EXCHANGE_FEE_BPS,
     impact_bps_per_1k: float = WF4_IMPACT_BPS_PER_1K,
     min_trade_value: float = WF4_MIN_TRADE_VALUE,
+    paper_trading: bool = WF4_PAPER_TRADING_ENABLED,
 ) -> str:
     """WF4: Weekly portfolio rebalancing workflow.
 
@@ -59,7 +61,9 @@ def portfolio_rebalancing_workflow(
     estimates transaction costs (Brenndoerfer model), generates trade
     orders, and produces a markdown order report stored to MinIO.
 
-    ORDER REPORTS ONLY — does not execute trades automatically.
+    Phase 4: When paper_trading=True, simulates trade execution,
+    updates the positions table, and takes portfolio snapshots for
+    performance tracking. When False (default), identical to Phase 3.
 
     Args:
         run_date: Target date (YYYY-MM-DD). Empty = latest signal run.
@@ -71,6 +75,7 @@ def portfolio_rebalancing_workflow(
         exchange_fee_bps: Exchange fee bps (default: 3.0).
         impact_bps_per_1k: Market impact per $1000 (default: 0.1).
         min_trade_value: Minimum trade value EUR (default: 100).
+        paper_trading: Enable paper trade simulation (default: False).
 
     Returns:
         Order report as markdown string.
@@ -121,5 +126,25 @@ def portfolio_rebalancing_workflow(
     store_result = store_rebalancing_to_db(assembled_result=assembled)
     store_parquet_result = store_rebalancing_to_parquet(assembled_result=assembled)
     report = generate_order_report(assembled_result=assembled)
+
+    # Step 7: Paper trading execution (Phase 4)
+    # When paper_trading=False, tasks short-circuit immediately.
+    paper_result = execute_paper_trades(
+        assembled_result=assembled,
+        portfolio_state=portfolio_state,
+        price_data=price_data,
+        paper_trading=paper_trading,
+        initial_capital=initial_capital,
+        commission_per_share=commission_per_share,
+        exchange_fee_bps=exchange_fee_bps,
+        impact_bps_per_1k=impact_bps_per_1k,
+    )
+
+    # Step 8: Portfolio snapshot (Phase 4)
+    snapshot_result = snapshot_portfolio(
+        paper_trade_result=paper_result,
+        paper_trading=paper_trading,
+        initial_capital=initial_capital,
+    )
 
     return report
