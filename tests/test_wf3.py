@@ -417,13 +417,15 @@ class TestCombineSignals:
         sample_technical_signals,
         sample_fundamental_signals,
     ):
-        """Combine 5 signals with 50/50 weights."""
+        """Combine 5 signals with Phase 2 weights (no sentiment)."""
         results = combine_signals(
             screening_context=sample_screening_context,
             tech_signals=sample_technical_signals,
             fund_signals=sample_fundamental_signals,
+            sent_signals=[],
             tech_weight=0.5,
             fund_weight=0.5,
+            sent_weight=0.0,
             run_date="2026-02-09",
         )
         assert len(results) == 5
@@ -442,8 +444,10 @@ class TestCombineSignals:
             screening_context=sample_screening_context,
             tech_signals=sample_technical_signals,
             fund_signals=sample_fundamental_signals,
+            sent_signals=[],
             tech_weight=0.5,
             fund_weight=0.5,
+            sent_weight=0.0,
             run_date="2026-02-09",
         )
         for r in results:
@@ -458,8 +462,10 @@ class TestCombineSignals:
             screening_context={},
             tech_signals=[],
             fund_signals=[],
+            sent_signals=[],
             tech_weight=0.5,
             fund_weight=0.5,
+            sent_weight=0.0,
             run_date="2026-02-09",
         )
         assert results == []
@@ -474,14 +480,51 @@ class TestCombineSignals:
             screening_context=sample_screening_context,
             tech_signals=[],
             fund_signals=sample_fundamental_signals,
+            sent_signals=[],
             tech_weight=0.5,
             fund_weight=0.5,
+            sent_weight=0.0,
             run_date="2026-02-09",
         )
         assert len(results) == 5
         # Technical score should be neutral (50) for all
         for r in results:
             assert r.technical_score == 50.0
+
+    def test_combine_with_sentiment_three_way(
+        self,
+        sample_screening_context,
+        sample_technical_signals,
+        sample_fundamental_signals,
+    ):
+        """Phase 6: Combine with 30/40/30 weights including sentiment."""
+        from src.shared.models import SentimentSignals
+
+        sent_signals = [
+            SentimentSignals(
+                symbol=symbol, num_articles=5, num_positive=3, num_neutral=1,
+                num_negative=1, news_provider="finnhub", sentiment_score=70.0,
+                sentiment_signal="very_positive", has_sentiment=True,
+            )
+            for symbol in sample_screening_context.keys()
+        ]
+
+        results = combine_signals(
+            screening_context=sample_screening_context,
+            tech_signals=sample_technical_signals,
+            fund_signals=sample_fundamental_signals,
+            sent_signals=sent_signals,
+            tech_weight=0.3,
+            fund_weight=0.4,
+            sent_weight=0.3,
+            run_date="2026-02-09",
+        )
+        assert len(results) == 5
+        for r in results:
+            assert r.sentiment_score == 70.0
+            assert r.sentiment_signal == "very_positive"
+            # Combined should include sentiment contribution
+            assert r.combined_signal_score > 0
 
 
 # ============================================================
@@ -672,3 +715,136 @@ class TestSignalResultModel:
             combined_signal_score=61.5, signal_strength="buy",
         )
         assert sr.data_quality == "complete"  # default
+
+    def test_signal_result_sentiment_defaults(self):
+        """SignalResult should have neutral sentiment defaults for backward compat."""
+        sr = SignalResult(
+            symbol="AAPL", run_date="2026-02-09",
+            wf2_composite_score=1.85, wf2_quintile=1,
+            technical_score=68.0, technical_signal="bullish",
+            fundamental_score=55.0, fundamental_signal="balanced",
+        )
+        assert sr.sentiment_score == 50.0
+        assert sr.sentiment_signal == "neutral"
+        assert sr.num_articles == 0
+        assert sr.news_provider == "none"
+
+    def test_signal_result_with_sentiment(self):
+        """SignalResult can store sentiment fields."""
+        sr = SignalResult(
+            symbol="AAPL", run_date="2026-02-09",
+            wf2_composite_score=1.85, wf2_quintile=1,
+            technical_score=68.0, technical_signal="bullish",
+            fundamental_score=55.0, fundamental_signal="balanced",
+            sentiment_score=72.5, sentiment_signal="very_positive",
+            num_articles=8, news_provider="finnhub",
+        )
+        assert sr.sentiment_score == 72.5
+        assert sr.sentiment_signal == "very_positive"
+        assert sr.num_articles == 8
+        assert sr.news_provider == "finnhub"
+
+
+# ============================================================
+# M6: Sentiment Fields in Assembled Result + Report
+# ============================================================
+
+class TestAssembleSentimentFields:
+    """Tests for sentiment data flowing through assemble_signal_result."""
+
+    def test_assembled_contains_weights(self):
+        """Assembled result should include signal weights."""
+        signal_results = [
+            SignalResult(
+                symbol="AAPL", run_date="2026-02-09",
+                wf2_composite_score=1.85, wf2_quintile=1,
+                technical_score=68.0, technical_signal="bullish",
+                fundamental_score=55.0, fundamental_signal="balanced",
+                sentiment_score=75.0, sentiment_signal="very_positive",
+                num_articles=5, news_provider="finnhub",
+                combined_signal_score=65.0, signal_strength="buy",
+            ),
+        ]
+        result = assemble_signal_result(
+            run_date="2026-02-09",
+            signal_results=signal_results,
+            tech_weight=0.3,
+            fund_weight=0.4,
+            sent_weight=0.3,
+        )
+        assert result["tech_weight"] == "0.3"
+        assert result["fund_weight"] == "0.4"
+        assert result["sent_weight"] == "0.3"
+
+    def test_assembled_json_contains_sentiment(self):
+        """signal_results_json should include sentiment fields."""
+        signal_results = [
+            SignalResult(
+                symbol="AAPL", run_date="2026-02-09",
+                wf2_composite_score=1.85, wf2_quintile=1,
+                technical_score=68.0, technical_signal="bullish",
+                fundamental_score=55.0, fundamental_signal="balanced",
+                sentiment_score=72.5, sentiment_signal="very_positive",
+                num_articles=8, news_provider="finnhub",
+                combined_signal_score=65.0, signal_strength="buy",
+            ),
+        ]
+        result = assemble_signal_result(
+            run_date="2026-02-09",
+            signal_results=signal_results,
+        )
+        sr_dicts = json.loads(result["signal_results_json"])
+        assert sr_dicts[0]["sentiment_score"] == 72.5
+        assert sr_dicts[0]["sentiment_signal"] == "very_positive"
+        assert sr_dicts[0]["num_articles"] == 8
+        assert sr_dicts[0]["news_provider"] == "finnhub"
+
+
+class TestReportSentimentFields:
+    """Tests for sentiment data in generate_signal_report output."""
+
+    def test_report_shows_sentiment_column(self):
+        """Report should include Sent column in per-stock table."""
+        sr_dicts = [
+            {"symbol": "AAPL", "run_date": "2026-02-09",
+             "wf2_composite_score": 1.85, "wf2_quintile": 1,
+             "technical_score": 68.0, "technical_signal": "bullish",
+             "fundamental_score": 55.0, "fundamental_signal": "balanced",
+             "sentiment_score": 72.5, "sentiment_signal": "very_positive",
+             "combined_signal_score": 65.0, "signal_strength": "buy",
+             "data_quality": "complete"},
+        ]
+        assembled = {
+            "run_date": "2026-02-09",
+            "num_symbols_analyzed": "1",
+            "num_with_complete_data": "1",
+            "num_with_partial_data": "0",
+            "top_buy_signals": "AAPL",
+            "top_sell_signals": "",
+            "tech_weight": "0.3",
+            "fund_weight": "0.4",
+            "sent_weight": "0.3",
+            "signal_results_json": json.dumps(sr_dicts),
+        }
+        report = generate_signal_report(assembled_result=assembled)
+        assert "Sent" in report
+        assert "72.5" in report
+
+    def test_report_shows_weights(self):
+        """Report should display the signal weights."""
+        assembled = {
+            "run_date": "2026-02-09",
+            "num_symbols_analyzed": "0",
+            "num_with_complete_data": "0",
+            "num_with_partial_data": "0",
+            "top_buy_signals": "",
+            "top_sell_signals": "",
+            "tech_weight": "0.3",
+            "fund_weight": "0.4",
+            "sent_weight": "0.3",
+            "signal_results_json": "[]",
+        }
+        report = generate_signal_report(assembled_result=assembled)
+        assert "tech=0.3" in report
+        assert "fund=0.4" in report
+        assert "sent=0.3" in report

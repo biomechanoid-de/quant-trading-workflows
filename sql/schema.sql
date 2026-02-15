@@ -159,8 +159,12 @@ CREATE TABLE IF NOT EXISTS signal_runs (
     num_with_partial_data INT,
     tech_weight DECIMAL(4,2),
     fund_weight DECIMAL(4,2),
+    sent_weight DECIMAL(4,2) DEFAULT 0.0,              -- Phase 6
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Phase 6 migration (run manually on cluster before deploying):
+-- ALTER TABLE signal_runs ADD COLUMN IF NOT EXISTS sent_weight DECIMAL(4,2) DEFAULT 0.0;
 
 CREATE INDEX IF NOT EXISTS idx_signal_runs_date ON signal_runs(run_date);
 
@@ -188,6 +192,11 @@ CREATE TABLE IF NOT EXISTS signal_results (
     dividend_yield DECIMAL(10,6),
     return_on_equity DECIMAL(10,6),
     debt_to_equity DECIMAL(10,4),
+    -- Sentiment signals (Phase 6)
+    sentiment_score DECIMAL(6,2) DEFAULT 50.0,
+    sentiment_signal VARCHAR(20) DEFAULT 'neutral',
+    num_articles INT DEFAULT 0,
+    news_provider VARCHAR(20) DEFAULT 'none',
     -- Combined
     combined_signal_score DECIMAL(6,2),
     signal_strength VARCHAR(20),
@@ -199,6 +208,12 @@ CREATE TABLE IF NOT EXISTS signal_results (
 CREATE INDEX IF NOT EXISTS idx_signal_results_run_date ON signal_results(run_date);
 CREATE INDEX IF NOT EXISTS idx_signal_results_symbol ON signal_results(symbol);
 CREATE INDEX IF NOT EXISTS idx_signal_results_strength ON signal_results(run_date, signal_strength);
+
+-- Phase 6 migration (run manually on cluster before deploying):
+-- ALTER TABLE signal_results ADD COLUMN IF NOT EXISTS sentiment_score DECIMAL(6,2) DEFAULT 50.0;
+-- ALTER TABLE signal_results ADD COLUMN IF NOT EXISTS sentiment_signal VARCHAR(20) DEFAULT 'neutral';
+-- ALTER TABLE signal_results ADD COLUMN IF NOT EXISTS num_articles INT DEFAULT 0;
+-- ALTER TABLE signal_results ADD COLUMN IF NOT EXISTS news_provider VARCHAR(20) DEFAULT 'none';
 
 -- ============================================================
 -- Rebalancing Runs (WF4: Portfolio & Rebalancing)
@@ -243,3 +258,36 @@ CREATE TABLE IF NOT EXISTS monitoring_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_monitoring_runs_date ON monitoring_runs(run_date);
+
+-- ============================================================
+-- Backtest Runs (WF6: Backtesting)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id SERIAL PRIMARY KEY,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    num_rebalances INT,
+    -- Signal strategy metrics
+    signal_cagr DECIMAL(10,6),
+    signal_sharpe DECIMAL(10,4),
+    signal_sortino DECIMAL(10,4),
+    signal_max_drawdown DECIMAL(10,6),
+    signal_calmar DECIMAL(10,4),
+    signal_final_value DECIMAL(14,2),
+    -- Benchmark metrics
+    benchmark_cagr DECIMAL(10,6),
+    benchmark_sharpe DECIMAL(10,4),
+    benchmark_sortino DECIMAL(10,4),
+    benchmark_max_drawdown DECIMAL(10,6),
+    benchmark_calmar DECIMAL(10,4),
+    benchmark_final_value DECIMAL(14,2),
+    -- Excess metrics
+    excess_cagr DECIMAL(10,6),
+    excess_sharpe DECIMAL(10,4),
+    -- Report
+    report_text TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(start_date, end_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_dates ON backtest_runs(start_date, end_date);

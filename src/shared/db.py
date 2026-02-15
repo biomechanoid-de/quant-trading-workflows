@@ -301,14 +301,15 @@ def store_signal_results(run_date: str, signal_results: list, run_metadata: dict
         cursor.execute(
             """INSERT INTO signal_runs
                    (run_date, num_symbols_analyzed, num_with_complete_data,
-                    num_with_partial_data, tech_weight, fund_weight)
-               VALUES (%s, %s, %s, %s, %s, %s)
+                    num_with_partial_data, tech_weight, fund_weight, sent_weight)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (run_date) DO UPDATE SET
                    num_symbols_analyzed = EXCLUDED.num_symbols_analyzed,
                    num_with_complete_data = EXCLUDED.num_with_complete_data,
                    num_with_partial_data = EXCLUDED.num_with_partial_data,
                    tech_weight = EXCLUDED.tech_weight,
                    fund_weight = EXCLUDED.fund_weight,
+                   sent_weight = EXCLUDED.sent_weight,
                    created_at = NOW()""",
             (
                 run_date,
@@ -317,6 +318,7 @@ def store_signal_results(run_date: str, signal_results: list, run_metadata: dict
                 run_metadata.get("num_with_partial_data", 0),
                 run_metadata.get("tech_weight", 0.5),
                 run_metadata.get("fund_weight", 0.5),
+                run_metadata.get("sent_weight", 0.0),
             ),
         )
 
@@ -330,8 +332,10 @@ def store_signal_results(run_date: str, signal_results: list, run_metadata: dict
                         fundamental_score, fundamental_signal,
                         pe_ratio, pe_zscore, dividend_yield,
                         return_on_equity, debt_to_equity,
+                        sentiment_score, sentiment_signal,
+                        num_articles, news_provider,
                         combined_signal_score, signal_strength, data_quality)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (run_date, symbol) DO UPDATE SET
                        wf2_composite_score = EXCLUDED.wf2_composite_score,
                        wf2_quintile = EXCLUDED.wf2_quintile,
@@ -347,6 +351,10 @@ def store_signal_results(run_date: str, signal_results: list, run_metadata: dict
                        dividend_yield = EXCLUDED.dividend_yield,
                        return_on_equity = EXCLUDED.return_on_equity,
                        debt_to_equity = EXCLUDED.debt_to_equity,
+                       sentiment_score = EXCLUDED.sentiment_score,
+                       sentiment_signal = EXCLUDED.sentiment_signal,
+                       num_articles = EXCLUDED.num_articles,
+                       news_provider = EXCLUDED.news_provider,
                        combined_signal_score = EXCLUDED.combined_signal_score,
                        signal_strength = EXCLUDED.signal_strength,
                        data_quality = EXCLUDED.data_quality,
@@ -363,6 +371,10 @@ def store_signal_results(run_date: str, signal_results: list, run_metadata: dict
                     getattr(sr, "_dividend_yield", 0.0),
                     getattr(sr, "_return_on_equity", -1.0),
                     getattr(sr, "_debt_to_equity", -1.0),
+                    getattr(sr, "sentiment_score", 50.0),
+                    getattr(sr, "sentiment_signal", "neutral"),
+                    getattr(sr, "num_articles", 0),
+                    getattr(sr, "news_provider", "none"),
                     sr.combined_signal_score, sr.signal_strength, sr.data_quality,
                 ),
             )
@@ -384,7 +396,8 @@ def get_latest_signal_results(run_date: str = "") -> list:
 
     Returns:
         List of tuples (symbol, combined_signal_score, signal_strength,
-        wf2_quintile, technical_score, fundamental_score, data_quality).
+        wf2_quintile, technical_score, fundamental_score, data_quality,
+        sentiment_score, sentiment_signal).
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -400,7 +413,7 @@ def get_latest_signal_results(run_date: str = "") -> list:
         cursor.execute(
             """SELECT symbol, combined_signal_score, signal_strength,
                       wf2_quintile, technical_score, fundamental_score,
-                      data_quality
+                      data_quality, sentiment_score, sentiment_signal
                FROM signal_results
                WHERE run_date = %s
                ORDER BY combined_signal_score DESC""",

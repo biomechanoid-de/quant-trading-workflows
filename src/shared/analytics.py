@@ -861,3 +861,139 @@ def calculate_cost_breakdown(
         "impact_cost": round(exchange_cost + impact_cost, 4),
         "total_cost": round(total_cost, 4),
     }
+
+
+# ============================================================
+# WF3: Sentiment Analysis (Phase 6)
+# ============================================================
+
+def aggregate_article_sentiments(
+    articles: list,
+    classifier_results: list,
+) -> list:
+    """Merge raw articles with classifier results into enriched article sentiments.
+
+    Args:
+        articles: List of article dicts from SentimentProvider.fetch_news().
+            Required keys: headline, published_at.
+        classifier_results: List of sentiment dicts from SentimentClassifier.classify().
+            Required keys: positive, neutral, negative.
+
+    Returns:
+        List of dicts with merged fields:
+            - headline, published_at (from articles)
+            - positive, neutral, negative (from classifier)
+        Length = min(len(articles), len(classifier_results)).
+    """
+    count = min(len(articles), len(classifier_results))
+    merged = []
+    for i in range(count):
+        merged.append({
+            "headline": articles[i].get("headline", ""),
+            "published_at": articles[i].get("published_at", ""),
+            "positive": classifier_results[i].get("positive", 0.0),
+            "neutral": classifier_results[i].get("neutral", 0.0),
+            "negative": classifier_results[i].get("negative", 0.0),
+        })
+    return merged
+
+
+def compute_sentiment_score(
+    article_sentiments: list,
+    decay_half_life_days: float = 3.0,
+    run_date: str = "",
+) -> float:
+    """Compute time-decay-weighted sentiment score (0-100) from article sentiments.
+
+    Recent articles are weighted more heavily using exponential decay:
+        weight = 2 ^ (-age_days / half_life)
+
+    Args:
+        article_sentiments: List of dicts with keys:
+            - positive: float (0-1)
+            - negative: float (0-1)
+            - published_at: str (ISO datetime or YYYY-MM-DD)
+        decay_half_life_days: Half-life for time decay (default: 3 days).
+        run_date: Reference date for age calculation (YYYY-MM-DD). Empty = today.
+
+    Returns:
+        Sentiment score from 0 (most negative) to 100 (most positive).
+        Returns 50.0 (neutral) if no articles.
+    """
+    from datetime import datetime
+
+    if not article_sentiments:
+        return 50.0
+
+    # Parse reference date
+    if run_date:
+        try:
+            ref_date = datetime.strptime(run_date, "%Y-%m-%d")
+        except ValueError:
+            ref_date = datetime.utcnow()
+    else:
+        ref_date = datetime.utcnow()
+
+    weighted_scores = []
+    total_weight = 0.0
+
+    for article in article_sentiments:
+        positive = article.get("positive", 0.0)
+        negative = article.get("negative", 0.0)
+
+        # Per-article sentiment: positive maps to 100, negative to 0
+        # Formula: positive_prob * 100 gives 0-100 range directly
+        # (neutral articles get ~50 since positive + negative ≈ 0)
+        article_score = positive * 100.0
+
+        # Calculate age for time decay
+        published_at = article.get("published_at", "")
+        age_days = 0.0
+        if published_at:
+            try:
+                # Try ISO format first
+                pub_date = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                pub_date = pub_date.replace(tzinfo=None)
+                age_days = max((ref_date - pub_date).total_seconds() / 86400.0, 0.0)
+            except (ValueError, TypeError):
+                try:
+                    # Try YYYY-MM-DD
+                    pub_date = datetime.strptime(published_at[:10], "%Y-%m-%d")
+                    age_days = max((ref_date - pub_date).days, 0.0)
+                except (ValueError, TypeError):
+                    age_days = 0.0
+
+        # Exponential decay weight
+        if decay_half_life_days > 0:
+            weight = 2.0 ** (-age_days / decay_half_life_days)
+        else:
+            weight = 1.0
+
+        weighted_scores.append(article_score * weight)
+        total_weight += weight
+
+    if total_weight == 0.0:
+        return 50.0
+
+    return round(sum(weighted_scores) / total_weight, 2)
+
+
+def classify_sentiment_signal(sentiment_score: float) -> str:
+    """Classify sentiment score into a trading signal.
+
+    Args:
+        sentiment_score: Score from 0-100.
+
+    Returns:
+        One of: "very_positive", "positive", "neutral",
+                "negative", "very_negative"
+    """
+    if sentiment_score >= 70:
+        return "very_positive"
+    elif sentiment_score >= 55:
+        return "positive"
+    elif sentiment_score >= 45:
+        return "neutral"
+    elif sentiment_score >= 30:
+        return "negative"
+    return "very_negative"
