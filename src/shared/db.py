@@ -864,3 +864,192 @@ def store_monitoring_run(run_date: str, monitoring_data: dict) -> int:
     finally:
         cursor.close()
         conn.close()
+
+
+# ============================================================
+# Dividend Tracking DB Functions
+# ============================================================
+
+
+def store_dividends(dividends: list) -> int:
+    """Store dividend events to the dividends table.
+
+    Uses UPSERT on (symbol, ex_date) for idempotency.
+    New dividends are inserted with processed=FALSE.
+
+    Args:
+        dividends: List of dicts with keys:
+            symbol, ex_date, amount_per_share
+
+    Returns:
+        Number of rows inserted/updated.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows_affected = 0
+
+    try:
+        for div in dividends:
+            cursor.execute(
+                """INSERT INTO dividends
+                       (symbol, ex_date, amount_per_share, processed)
+                   VALUES (%s, %s, %s, FALSE)
+                   ON CONFLICT (symbol, ex_date) DO UPDATE SET
+                       amount_per_share = EXCLUDED.amount_per_share""",
+                (
+                    div["symbol"],
+                    div["ex_date"],
+                    div["amount_per_share"],
+                ),
+            )
+            rows_affected += 1
+
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    return rows_affected
+
+
+def get_pending_dividends(run_date: str) -> list:
+    """Get unprocessed dividends that can be matched against held positions.
+
+    Returns dividends where ex_date <= run_date AND processed = FALSE,
+    joined with positions to get current shares held.
+
+    Args:
+        run_date: Current run date (YYYY-MM-DD).
+
+    Returns:
+        List of tuples (id, symbol, ex_date, amount_per_share, shares_held).
+        shares_held is 0 if no position exists for the symbol.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """SELECT d.id, d.symbol, d.ex_date, d.amount_per_share,
+                      COALESCE(p.shares, 0) AS shares_held
+               FROM dividends d
+               LEFT JOIN positions p ON d.symbol = p.symbol
+               WHERE d.ex_date <= %s
+                 AND d.processed = FALSE
+               ORDER BY d.ex_date ASC""",
+            (run_date,),
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def mark_dividends_processed(processed_dividends: list) -> int:
+    """Mark dividends as processed with shares held and total amount.
+
+    Args:
+        processed_dividends: List of dicts with keys:
+            id, shares_held, total_amount, reinvested
+
+    Returns:
+        Number of rows updated.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows_updated = 0
+
+    try:
+        for div in processed_dividends:
+            cursor.execute(
+                """UPDATE dividends
+                   SET processed = TRUE,
+                       shares_held = %s,
+                       total_amount = %s,
+                       reinvested = %s
+                   WHERE id = %s""",
+                (
+                    div["shares_held"],
+                    div["total_amount"],
+                    div["reinvested"],
+                    div["id"],
+                ),
+            )
+            rows_updated += 1
+
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    return rows_updated
+
+
+def get_cumulative_dividend_total() -> float:
+    """Get total dividends received across all processed dividend events.
+
+    Returns:
+        Sum of total_amount for all processed dividends, or 0.0 if none.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """SELECT COALESCE(SUM(total_amount), 0)
+               FROM dividends
+               WHERE processed = TRUE"""
+        )
+        result = cursor.fetchone()
+        return float(result[0]) if result else 0.0
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_dividend_summary(run_date: str) -> dict:
+    """Get dividend summary with MTD and YTD totals.
+
+    Args:
+        run_date: Current date (YYYY-MM-DD) for month/year boundaries.
+
+    Returns:
+        Dict with keys: cumulative, mtd, ytd (all floats).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Cumulative total
+        cursor.execute(
+            """SELECT COALESCE(SUM(total_amount), 0)
+               FROM dividends WHERE processed = TRUE"""
+        )
+        cumulative = float(cursor.fetchone()[0])
+
+        # MTD: dividends processed in current month
+        cursor.execute(
+            """SELECT COALESCE(SUM(total_amount), 0)
+               FROM dividends
+               WHERE processed = TRUE
+                 AND ex_date >= DATE_TRUNC('month', %s::date)
+                 AND ex_date <= %s""",
+            (run_date, run_date),
+        )
+        mtd = float(cursor.fetchone()[0])
+
+        # YTD: dividends processed in current year
+        cursor.execute(
+            """SELECT COALESCE(SUM(total_amount), 0)
+               FROM dividends
+               WHERE processed = TRUE
+                 AND ex_date >= DATE_TRUNC('year', %s::date)
+                 AND ex_date <= %s""",
+            (run_date, run_date),
+        )
+        ytd = float(cursor.fetchone()[0])
+
+        return {"cumulative": cumulative, "mtd": mtd, "ytd": ytd}
+    finally:
+        cursor.close()
+        conn.close()

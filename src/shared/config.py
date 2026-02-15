@@ -130,6 +130,11 @@ WF4_IMPACT_BPS_PER_1K = float(os.environ.get("WF4_IMPACT_BPS_PER_1K", "0.1")) # 
 # When False, WF4 generates order reports only (Phase 3 behavior).
 WF4_PAPER_TRADING_ENABLED = os.environ.get("WF4_PAPER_TRADING_ENABLED", "true").lower() == "true"
 
+# Phase 3: Dividend Handling
+# When False (default), dividends are added to cash balance.
+# When True, dividends are reinvested (DRIP) into the paying stock.
+WF4_DIVIDEND_REINVEST = os.environ.get("WF4_DIVIDEND_REINVEST", "false").lower() == "true"
+
 # ============================================================
 # WF5: Monitoring & Reporting Defaults
 # ============================================================

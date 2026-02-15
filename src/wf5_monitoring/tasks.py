@@ -445,6 +445,26 @@ def generate_monitoring_report(
     lines.append(f"| YTD | EUR {float(pnl_data['ytd_pnl']):+,.2f} |")
     lines.append("")
 
+    # Dividends
+    try:
+        from src.shared.db import get_dividend_summary
+        from src.shared.config import WF4_DIVIDEND_REINVEST
+
+        div_summary = get_dividend_summary(run_date)
+        if div_summary["cumulative"] > 0:
+            lines.append("## Dividends")
+            lines.append("")
+            lines.append("| Metric | Value |")
+            lines.append("|--------|-------|")
+            lines.append(f"| Cumulative | EUR {div_summary['cumulative']:,.2f} |")
+            lines.append(f"| MTD | EUR {div_summary['mtd']:,.2f} |")
+            lines.append(f"| YTD | EUR {div_summary['ytd']:,.2f} |")
+            mode = "DRIP" if WF4_DIVIDEND_REINVEST else "Cash"
+            lines.append(f"| Mode | {mode} |")
+            lines.append("")
+    except Exception:
+        pass  # Dividend section is optional; skip on DB errors
+
     # Top Winners / Losers
     lines.append("## Top Winners & Losers")
     lines.append("")

@@ -1163,13 +1163,16 @@ def snapshot_portfolio(
     if prev_snapshot and str(prev_snapshot[0]) != run_date:
         prev_total = float(prev_snapshot[1])
         daily_pnl = total_value - prev_total
-        cumulative_dividends = (
-            float(prev_snapshot[5]) if prev_snapshot[5] else 0.0
-        )
     else:
         # First snapshot or same-day re-run
         daily_pnl = total_value - initial_capital
-        cumulative_dividends = 0.0
+
+    # Cumulative dividends from process_dividends task (or fallback to prev snapshot)
+    cumulative_dividends = float(
+        paper_trade_result.get("cumulative_dividends", "0")
+    )
+    if cumulative_dividends == 0.0 and prev_snapshot and prev_snapshot[5]:
+        cumulative_dividends = float(prev_snapshot[5])
 
     store_portfolio_snapshot(
         snapshot_date=run_date,
@@ -1187,6 +1190,171 @@ def snapshot_portfolio(
         f"invested=EUR {invested:,.2f}, PnL=EUR {daily_pnl:,.2f}, "
         f"positions={num_positions}"
     )
+
+
+# ============================================================
+# Task 13: Process Dividends (Phase 3)
+# ============================================================
+
+@task(
+    requests=Resources(cpu="200m", mem="256Mi"),
+    limits=Resources(cpu="500m", mem="512Mi"),
+)
+def process_dividends(
+    paper_trade_result: Dict[str, str],
+    paper_trading: bool,
+    dividend_reinvest: bool,
+    initial_capital: float,
+) -> Dict[str, str]:
+    """Match pending dividends against held positions, credit cash or DRIP.
+
+    When paper_trading=False, returns passthrough of paper_trade_result.
+    When True, fetches unprocessed dividends from DB, matches them against
+    current positions, and either adds cash (default) or reinvests (DRIP).
+
+    Args:
+        paper_trade_result: Dict from execute_paper_trades.
+        paper_trading: Enable dividend processing.
+        dividend_reinvest: When True, reinvest dividends (DRIP).
+            When False, add to cash balance.
+        initial_capital: For first-run calculations.
+
+    Returns:
+        Dict[str, str] with same keys as paper_trade_result plus:
+        - "dividends_processed": str (count)
+        - "total_dividend_amount": str
+        - "dividend_action": "cash" | "reinvest" | "disabled"
+        - "cumulative_dividends": str (running total)
+    """
+    import json
+
+    # Passthrough all fields from paper_trade_result
+    result = dict(paper_trade_result)
+
+    if not paper_trading:
+        result["dividends_processed"] = "0"
+        result["total_dividend_amount"] = "0.0"
+        result["dividend_action"] = "disabled"
+        result["cumulative_dividends"] = "0.0"
+        return result
+
+    from src.shared.db import (
+        get_pending_dividends,
+        mark_dividends_processed,
+        get_cumulative_dividend_total,
+        upsert_positions,
+    )
+    from src.shared.config import SYMBOL_SECTORS
+
+    run_date = result.get("run_date", "")
+    cash = float(result.get("cash_after", "0"))
+    positions = json.loads(result.get("positions_after_json", "[]"))
+
+    # Build position map
+    pos_map = {}
+    for p in positions:
+        pos_map[p["symbol"]] = {
+            "shares": float(p["shares"]),
+            "avg_cost": float(p["avg_cost"]),
+            "current_price": float(p.get("current_price", p["avg_cost"])),
+            "sector": p.get("sector", ""),
+        }
+
+    pending = get_pending_dividends(run_date)
+    processed_list = []
+    total_dividend = 0.0
+
+    for div_id, symbol, ex_date, amount_per_share, shares_held in pending:
+        shares_held = float(shares_held)
+        if shares_held <= 0:
+            # No position for this symbol — mark as processed with 0
+            processed_list.append({
+                "id": div_id,
+                "shares_held": 0,
+                "total_amount": 0.0,
+                "reinvested": False,
+            })
+            continue
+
+        total_amount = round(float(amount_per_share) * shares_held, 4)
+        total_dividend += total_amount
+
+        if dividend_reinvest and symbol in pos_map:
+            # DRIP: buy additional shares at current price
+            current_price = pos_map[symbol]["current_price"]
+            if current_price > 0:
+                new_shares = total_amount / current_price
+                old_shares = pos_map[symbol]["shares"]
+                old_cost = pos_map[symbol]["avg_cost"]
+                total_shares = old_shares + new_shares
+                new_avg_cost = (
+                    (old_shares * old_cost + new_shares * current_price)
+                    / total_shares
+                )
+                pos_map[symbol]["shares"] = round(total_shares, 4)
+                pos_map[symbol]["avg_cost"] = round(new_avg_cost, 4)
+
+            processed_list.append({
+                "id": div_id,
+                "shares_held": shares_held,
+                "total_amount": total_amount,
+                "reinvested": True,
+            })
+        else:
+            # Cash: add dividend to cash balance
+            cash += total_amount
+            processed_list.append({
+                "id": div_id,
+                "shares_held": shares_held,
+                "total_amount": total_amount,
+                "reinvested": False,
+            })
+
+    # Persist to DB
+    if processed_list:
+        mark_dividends_processed(processed_list)
+
+    if dividend_reinvest and total_dividend > 0:
+        # Update positions in DB for DRIP shares
+        positions_for_db = []
+        for symbol, pos in sorted(pos_map.items()):
+            positions_for_db.append({
+                "symbol": symbol,
+                "shares": pos["shares"],
+                "avg_cost": pos["avg_cost"],
+                "current_price": pos["current_price"],
+                "sector": pos.get("sector", ""),
+            })
+        upsert_positions(positions_for_db)
+
+    # Rebuild positions list
+    updated_positions = []
+    for symbol, pos in sorted(pos_map.items()):
+        if pos["shares"] > 0:
+            updated_positions.append({
+                "symbol": symbol,
+                "shares": pos["shares"],
+                "avg_cost": pos["avg_cost"],
+                "current_price": pos["current_price"],
+                "sector": pos.get("sector", ""),
+            })
+
+    # Calculate new totals
+    invested = sum(
+        p["shares"] * p["current_price"] for p in updated_positions
+    )
+    total_value = cash + invested
+    cumulative = get_cumulative_dividend_total()
+
+    result["cash_after"] = str(round(cash, 2))
+    result["positions_after_json"] = json.dumps(updated_positions)
+    result["total_value_after"] = str(round(total_value, 2))
+    result["dividends_processed"] = str(len(processed_list))
+    result["total_dividend_amount"] = str(round(total_dividend, 4))
+    result["dividend_action"] = "reinvest" if dividend_reinvest else "cash"
+    result["cumulative_dividends"] = str(round(cumulative, 2))
+
+    return result
 
 
 # ============================================================

@@ -22,6 +22,7 @@ from src.shared.config import (
     WF4_INITIAL_CAPITAL, WF4_MAX_POSITION_PCT, WF4_MAX_SECTOR_PCT,
     WF4_CASH_RESERVE_PCT, WF4_COMMISSION_PER_SHARE, WF4_EXCHANGE_FEE_BPS,
     WF4_IMPACT_BPS_PER_1K, WF4_MIN_TRADE_VALUE, WF4_PAPER_TRADING_ENABLED,
+    WF4_DIVIDEND_REINVEST,
     WF5_LOOKBACK_DAYS, WF5_RISK_FREE_RATE,
     WF5_DRAWDOWN_ALERT_PCT, WF5_POSITION_ALERT_PCT,
     WF5_VAR_ALERT_PCT, WF5_LOSS_ALERT_PCT,
@@ -88,6 +89,7 @@ wf4_prod_daily = LaunchPlan.get_or_create(
         "impact_bps_per_1k": WF4_IMPACT_BPS_PER_1K,
         "min_trade_value": WF4_MIN_TRADE_VALUE,
         "paper_trading": WF4_PAPER_TRADING_ENABLED,
+        "dividend_reinvest": WF4_DIVIDEND_REINVEST,
     },
     schedule=CronSchedule(schedule="0 9 * * *"),
 )
