@@ -16,3 +16,5 @@ htmlcov/
 *.sqlite
 .idea/
 .vscode/
+.DS_Store
+models/

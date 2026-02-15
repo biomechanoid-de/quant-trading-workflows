@@ -104,12 +104,23 @@ WF2_KMEANS_MAX_K = int(os.environ.get("WF2_KMEANS_MAX_K", "10"))
 # WF3: Signal & Analysis Defaults
 # ============================================================
 
-WF3_TECH_WEIGHT = float(os.environ.get("WF3_TECH_WEIGHT", "0.50"))       # Phase 2: 50% tech
-WF3_FUND_WEIGHT = float(os.environ.get("WF3_FUND_WEIGHT", "0.50"))       # Phase 2: 50% fund
+WF3_TECH_WEIGHT = float(os.environ.get("WF3_TECH_WEIGHT", "0.30"))       # Phase 6: 30% tech (was 0.50)
+WF3_FUND_WEIGHT = float(os.environ.get("WF3_FUND_WEIGHT", "0.40"))       # Phase 6: 40% fund (was 0.50)
+WF3_SENT_WEIGHT = float(os.environ.get("WF3_SENT_WEIGHT", "0.30"))       # Phase 6: 30% sentiment
 WF3_MAX_QUINTILE = int(os.environ.get("WF3_MAX_QUINTILE", "2"))          # Analyze top 40%
 WF3_LOOKBACK_DAYS = int(os.environ.get("WF3_LOOKBACK_DAYS", "252"))      # 1 year of trading days
 WF3_SMA_SHORT = int(os.environ.get("WF3_SMA_SHORT", "50"))              # Short SMA window
 WF3_SMA_LONG = int(os.environ.get("WF3_SMA_LONG", "200"))               # Long SMA window
+
+# ============================================================
+# WF3: Sentiment Analysis (Phase 6)
+# ============================================================
+
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+MARKETAUX_API_KEY = os.environ.get("MARKETAUX_API_KEY", "")
+SENTIMENT_NEWS_DAYS = int(os.environ.get("SENTIMENT_NEWS_DAYS", "7"))          # Look back N days for news
+SENTIMENT_DECAY_HALF_LIFE = float(os.environ.get("SENTIMENT_DECAY_HALF_LIFE", "3.0"))  # Days
+SENTIMENT_MODEL_DIR = os.environ.get("SENTIMENT_MODEL_DIR", "/root/models/distilbert-finance-sentiment")
 
 # ============================================================
 # WF4: Portfolio & Rebalancing Defaults

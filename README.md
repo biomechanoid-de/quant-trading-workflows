@@ -7,7 +7,7 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
 
 ---
 
-## Architecture: 5 Flyte Workflows
+## Architecture: 6 Flyte Workflows
 
 ```
                         FLYTE WORKFLOW ORCHESTRATION
@@ -19,16 +19,19 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
  |  WF2: Universe & Screening     (daily, 07:00 UTC)        [Phase 2]  |
  |   +-> Load prices -> Metrics -> Cluster + Score -> Report           |
  |                                                                      |
- |  WF3: Signal & Analysis        (daily, 08:00 UTC)        [Phase 2]  |
- |   +-> Load WF2 context -> Technical + Fundamentals (parallel)       |
- |   +-> Combine signals -> Store + Report                             |
+ |  WF3: Signal & Analysis        (daily, 08:00 UTC)        [Phase 6]  |
+ |   +-> Load WF2 context -> Tech + Fund + Sentiment (3 parallel)     |
+ |   +-> Combine signals (30/40/30) -> Store + Report                  |
  |                                                                      |
- |  WF4: Portfolio & Rebalancing  (daily, 09:00 UTC)         [Phase 4]  |
+ |  WF4: Portfolio & Rebalancing  (daily, 09:00 UTC)        [Phase 4]  |
  |   +-> Target weights -> Transaction costs -> Order report           |
  |   +-> Paper trading -> Portfolio snapshot                           |
  |                                                                      |
  |  WF5: Monitoring & Reporting   (daily, 10:00 UTC)        [Phase 5]  |
  |   +-> P&L -> Risk metrics -> Alerts -> Markdown report             |
+ |                                                                      |
+ |  WF6: Backtesting              (weekly Sun, 11:00 UTC)   [Phase 6]  |
+ |   +-> Load signals -> Simulate portfolio vs benchmark -> Report     |
  |                                                                      |
  +----------------------------------------------------------------------+
 ```
@@ -59,38 +62,48 @@ quant-trading-workflows/
 +-- Makefile                           # Build, test, deploy commands
 +-- pyproject.toml                     # Dependencies & project config
 +-- sql/
-|   +-- schema.sql                     # PostgreSQL schema (11 tables)
+|   +-- schema.sql                     # PostgreSQL schema (12 tables)
 +-- src/
 |   +-- shared/                        # Shared across all workflows
-|   |   +-- models.py                  # Data models (11 dataclasses)
-|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2-WF5 params
+|   |   +-- models.py                  # Data models (13 dataclasses)
+|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2-WF6 params
 |   |   +-- db.py                      # PostgreSQL helpers (store, query, screening, signals, monitoring)
-|   |   +-- analytics.py              # 21 pure functions (RSI, SMA, MACD, Bollinger, cost breakdown, ...)
+|   |   +-- analytics.py              # 24 pure functions (RSI, SMA, MACD, Bollinger, sentiment, ...)
 |   |   +-- storage.py                # MinIO/S3 Parquet storage
 |   |   +-- providers/
-|   |       +-- base.py                # DataProvider ABC (pluggable)
-|   |       +-- yfinance_provider.py   # YFinance: EOD + fundamentals
+|   |   |   +-- base.py                # DataProvider ABC (pluggable)
+|   |   |   +-- yfinance_provider.py   # YFinance: EOD + fundamentals
+|   |   |   +-- sentiment_base.py      # SentimentProvider ABC
+|   |   |   +-- finnhub_provider.py    # Finnhub: financial news (primary)
+|   |   |   +-- marketaux_provider.py  # Marketaux: financial news (fallback)
+|   |   +-- inference/
+|   |       +-- base.py                # SentimentClassifier ABC
+|   |       +-- onnx_cpu.py            # ONNX Runtime CPU inference (DistilRoBERTa)
 |   +-- wf1_data_ingestion/            # Phase 1: IMPLEMENTED
 |   |   +-- tasks.py                   # fetch, validate, store, quality_check
 |   |   +-- workflow.py                # data_ingestion_workflow
 |   +-- wf2_universe_screening/        # Phase 2: IMPLEMENTED
 |   |   +-- tasks.py                   # 9 tasks: load, compute, cluster, score, store, report
 |   |   +-- workflow.py                # universe_screening_workflow
-|   +-- wf3_signal_analysis/           # Phase 2: IMPLEMENTED
-|   |   +-- tasks.py                   # 8 tasks: load, tech, fund, combine, assemble, store, report
-|   |   +-- workflow.py                # signal_analysis_workflow
+|   +-- wf3_signal_analysis/           # Phase 6: IMPLEMENTED (sentiment + tech + fund)
+|   |   +-- tasks.py                   # 9 tasks: load, tech, fund, sentiment, combine, assemble, store, report
+|   |   +-- workflow.py                # signal_analysis_workflow (3 parallel branches)
 |   +-- wf4_portfolio_rebalancing/     # Phase 3+4: IMPLEMENTED (10 tasks + 2 paper trading)
 |   |   +-- tasks.py                   # resolve, load, weights, prices, orders, paper trade, snapshot
 |   |   +-- workflow.py                # portfolio_rebalancing_workflow
 |   +-- wf5_monitoring/                # Phase 5: IMPLEMENTED
 |   |   +-- tasks.py                   # 4 tasks: pnl, risk_metrics, alerts, report
 |   |   +-- workflow.py                # monitoring_workflow
+|   +-- wf6_backtesting/              # Phase 6: IMPLEMENTED
+|   |   +-- tasks.py                   # 6 tasks: resolve, load, simulate, benchmark, compare, report
+|   |   +-- workflow.py                # backtesting_workflow
 +-- launch_plans/
 |   +-- development.py                 # No schedules (all dev runs manual)
-|   +-- production.py                  # WF1-WF5 all daily schedules
-+-- tests/                             # 264 unit tests (no network/DB required)
+|   +-- production.py                  # WF1-WF5 daily + WF6 weekly schedules
 +-- scripts/
-    +-- run_local.sh                   # Local WF1 testing
+|   +-- run_local.sh                   # Local WF1 testing
+|   +-- export_sentiment_model.py      # One-time: export DistilRoBERTa to ONNX INT8
++-- tests/                             # 347 unit tests (no network/DB required)
 ```
 
 ---
@@ -229,16 +242,17 @@ Four factors with Z-score normalization and quintile ranking (Q1=best, Q5=worst)
 
 ---
 
-## Phase 2: Signal & Analysis (WF3)
+## Phase 6: Signal & Analysis (WF3)
 
-Deeper technical and fundamental analysis for WF2's top-ranked stocks (quintiles 1-2). Produces composite buy/hold/sell signals with configurable weights.
+Deeper technical, fundamental, and sentiment analysis for WF2's top-ranked stocks (quintiles 1-2). Produces composite buy/hold/sell signals with three-way weighted scoring: 30% technical + 40% fundamental + 30% sentiment.
 
-### Pipeline (8 Tasks, Parallel DAG)
+### Pipeline (9 Tasks, 3-Branch Parallel DAG)
 
 ```
-load_screening_context --> +- compute_technical_signals  -+--> combine_signals --> assemble_signal_result
-      (200m/256Mi)         +- fetch_fundamental_data     -+     (300m/256Mi)          (200m/256Mi)
-                                                                                           |
+load_screening_context --> +- compute_technical_signals  -+
+      (200m/256Mi)         +- fetch_fundamental_data     -+--> combine_signals --> assemble_signal_result
+                           +- fetch_sentiment_data       -+     (300m/256Mi)          (200m/256Mi)
+                                (500m/1536Mi)                                              |
                                                                           +----------------+----------------+
                                                                           v                v                v
                                                                   store_signals_to_db  store_to_parquet  generate_report
@@ -267,6 +281,20 @@ Technical Score = SMA (40%) + MACD (35%) + Bollinger (25%)
 | **Debt/Equity** | 15% | Lower leverage = better |
 | **Current Ratio** | 15% | Closer to 1.5 = healthier |
 
+### Sentiment Analysis (Phase 6)
+
+Financial news sentiment via DistilRoBERTa ONNX model with dual news providers:
+
+| Component | Description |
+|-----------|-------------|
+| **News Provider (Primary)** | Finnhub — 60 req/min free tier, company news endpoint |
+| **News Provider (Fallback)** | Marketaux — 100 req/day free tier, used when Finnhub returns empty |
+| **Classifier** | DistilRoBERTa-Finance (INT8 ONNX, ~70MB) — 3-class: positive/neutral/negative |
+| **Aggregation** | Time-decay weighted (half-life 3 days) over last 7 days of headlines |
+| **Score** | 0-100 sentiment score mapped to very_positive/positive/neutral/negative/very_negative |
+
+**Provider abstraction:** `SentimentProvider` ABC allows swapping news sources. `SentimentClassifier` ABC allows migrating from ONNX CPU to Hailo NPU when model support is available.
+
 ### Signal Strength Classification
 
 | Combined Score | Signal |
@@ -279,7 +307,7 @@ Technical Score = SMA (40%) + MACD (35%) + Bollinger (25%)
 
 ### Analytics Functions (added for WF3)
 
-9 new pure computation functions in `src/shared/analytics.py`:
+12 pure computation functions in `src/shared/analytics.py`:
 
 | Function | Description |
 |----------|-------------|
@@ -292,19 +320,23 @@ Technical Score = SMA (40%) + MACD (35%) + Bollinger (25%)
 | `normalize_pe_ratio` | P/E z-score vs sector median |
 | `compute_fundamental_score` | Weighted 0-100 fundamental score |
 | `classify_value_signal` | Value/growth/balanced classification |
+| `compute_sentiment_score` | Time-decay-weighted news sentiment aggregation |
+| `classify_sentiment_signal` | Sentiment strength classification |
+| `aggregate_article_sentiments` | Merge provider articles with classifier output |
 
 ### Dual-Write Output
 
-- **PostgreSQL:** `signal_runs` (metadata) + `signal_results` (per-symbol technical + fundamental + combined)
+- **PostgreSQL:** `signal_runs` (metadata + sent_weight) + `signal_results` (per-symbol tech + fund + sentiment + combined)
 - **MinIO Parquet:** `s3://quant-data/signals/year=YYYY/month=MM/day=DD/signals.parquet`
-- **Text Report:** Signal distribution, top buys/sells, per-stock details
+- **Text Report:** Signal distribution, top buys/sells, per-stock details with sentiment column
 
 ### Key Design Decisions
 
 - **Top 40% filter:** Only analyzes WF2 quintiles 1-2 (~20 stocks) to respect Pi cluster + yfinance rate limits
-- **50/50 weights:** Phase 2 has no sentiment. Phase 4 shifts to 30% tech / 40% fund / 30% sentiment
-- **Graceful fundamentals:** Missing P/E, ROE, D/E default to neutral scores (not exclusion). `data_quality` field tracks completeness
-- **Rate limiting:** 0.2s sleep between yfinance fundamental fetches (5 req/s)
+- **30/40/30 weights:** 30% technical + 40% fundamental + 30% sentiment (Phase 6). Rollback: set `WF3_SENT_WEIGHT=0.0`, `WF3_TECH_WEIGHT=0.5`, `WF3_FUND_WEIGHT=0.5`
+- **Graceful degradation:** Missing fundamentals default to neutral. Zero news articles → neutral sentiment (50.0) with `has_sentiment=False`
+- **Rate limiting:** 0.2s sleep between yfinance fetches, 0.5s between news API calls
+- **CPU inference:** ONNX Runtime on ARM64 CPU (future: Hailo NPU when DistilBERT support is added)
 
 ---
 
@@ -432,23 +464,65 @@ All thresholds are configurable via environment variables (`WF5_DRAWDOWN_ALERT_P
 
 ---
 
+## Phase 6: Backtesting (WF6)
+
+Historical backtesting workflow that replays the pension fund portfolio construction on past signal results and compares against an equal-weight buy-and-hold benchmark.
+
+### Pipeline (6 Tasks, Parallel DAG)
+
+```
+resolve_backtest_params --> load_historical_signals --> +- simulate_signal_portfolio -+--> compare_strategies
+      (100m/128Mi)              (300m/256Mi)            +- compute_benchmark_returns -+      (200m/256Mi)
+                                                                                                  |
+                                                                                                  v
+                                                                                      generate_backtest_report
+                                                                                           (200m/256Mi)
+```
+
+### Strategy Simulation
+
+- **Signal Portfolio:** Replays pension fund allocation model (strong_buy=3x, buy=2x, hold/sell=0) with position caps (5%), sector caps (25%), and full transaction cost modeling
+- **Benchmark:** Equal-weight buy-and-hold across all buy/strong_buy stocks from the first signal date
+
+### Comparison Metrics
+
+| Metric | Description |
+|--------|-------------|
+| CAGR | Compound Annual Growth Rate |
+| Sharpe | Risk-adjusted return (annualized) |
+| Sortino | Downside risk-adjusted return |
+| Max Drawdown | Maximum peak-to-trough decline |
+| Calmar | CAGR / max drawdown |
+
+All metrics computed for both signal portfolio and benchmark, plus excess (signal - benchmark).
+
+### Output
+
+- **PostgreSQL:** `backtest_runs` table with UPSERT on (start_date, end_date)
+- **MinIO:** `s3://quant-data/reports/wf6/year=YYYY/month=MM/day=DD/backtest_report.md`
+- **Report:** Markdown with strategy vs benchmark comparison, per-period returns, excess metrics
+- DB and MinIO failures are non-fatal (report is still returned as workflow output)
+
+---
+
 ## Database Schema
 
-PostgreSQL on pi5-1tb (64 GB SD card; MinIO on 1 TB NVMe SSD). Eleven tables:
+PostgreSQL on pi5-1tb (64 GB SD card; MinIO on 1 TB NVMe SSD). Twelve tables:
 
 | Table | Workflow | Purpose |
 |-------|----------|---------|
 | `market_data` | WF1 | OHLCV price data with UNIQUE(symbol, date) |
 | `screening_runs` | WF2 | Screening run metadata (benchmark, optimal K) |
 | `screening_results` | WF2 | Per-symbol metrics, scores, quintiles, clusters |
-| `signal_runs` | WF3 | Signal analysis run metadata |
-| `signal_results` | WF3 | Per-symbol technical + fundamental + combined signals |
+| `signal_runs` | WF3 | Signal analysis run metadata (tech/fund/sent weights) |
+| `signal_results` | WF3 | Per-symbol tech + fund + sentiment + combined signals |
 | `rebalancing_runs` | WF4 | Rebalancing run metadata and order summaries |
 | `positions` | WF4 | Current portfolio positions (paper trading) |
 | `trades` | WF4 | Executed trades with cost breakdown |
 | `dividends` | WF4 | Dividend tracking and reinvestment |
 | `portfolio_snapshots` | WF4/WF5 | Portfolio value snapshots for performance tracking |
 | `monitoring_runs` | WF5 | Monitoring run metadata, P&L, risk metrics, alerts |
+| `backtest_runs` | WF6 | Backtest results: strategy vs benchmark metrics |
 
 Initialize: `make init-db` or `psql -f sql/schema.sql`
 
@@ -518,6 +592,7 @@ Schedules are controlled exclusively via two files:
 | `launch_plans/production.py` | production | `wf3_signal_analysis_prod_daily` -- Cron `0 8 * * *` (daily 08:00 UTC) |
 | `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_daily` -- Cron `0 9 * * *` (daily 09:00 UTC) |
 | `launch_plans/production.py` | production | `wf5_monitoring_prod_daily` -- Cron `0 10 * * *` (daily 10:00 UTC) |
+| `launch_plans/production.py` | production | `wf6_backtesting_prod_weekly` -- Cron `0 11 * * 0` (Sunday 11:00 UTC) |
 | `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
@@ -535,8 +610,8 @@ Pension fund model: broad diversification, low costs, regular dividend income as
 ### 3. Transaction Costs as First-Class Citizen
 Every potential trade is evaluated against its costs (Brenndoerfer model: commission + spread + market impact). Only trades with positive expected net alpha are proposed.
 
-### 4. Hailo NPU for Edge Intelligence (Phase 4)
-Sentiment analysis runs locally on Pi 5 with Hailo-10H (40 TOPS). No cloud APIs, no ongoing costs, full data control.
+### 4. Edge Intelligence with Abstraction Layer (Phase 6)
+Sentiment analysis uses ONNX Runtime on CPU now, with a `SentimentClassifier` ABC designed for future Hailo-10H NPU migration when DistilBERT support is added. News from Finnhub (primary) + Marketaux (fallback). No cloud inference APIs, full data control.
 
 ### 5. Everything in Flyte
 Every step is reproducible, versioned, and traceable via Flyte Console. No "it ran on my laptop" problem.
@@ -558,27 +633,29 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 | **3. Portfolio** | 5-6 | System proposes trades, tracks model portfolio | WF4 | Complete |
 | **4. Paper Trading** | 7-8 | Simulated trade execution, portfolio tracking | WF4 (paper trading) | Complete |
 | **5. Monitoring** | 9-10 | Full system autonomous, monitoring complete | WF5 | Complete |
-| **6. Intelligence** | TBD | Hailo NPU sentiment, backtesting | WF3 (sentiment) | Planned |
+| **6. Intelligence** | 11-12 | Sentiment analysis (ONNX CPU), backtesting | WF3 (sentiment), WF6 | Complete |
 | **7. Data Provider** | TBD | Choose paid provider based on experience | All | Planned |
 
 ---
 
-## Current Status (Phase 5 Complete)
+## Current Status (Phase 6 Complete)
 
 | Component | Status |
 |-----------|--------|
 | WF1: Data Ingestion (5 tasks, dual-write) | LIVE -- daily at 06:00 UTC |
 | WF2: Universe & Screening (9 tasks, parallel DAG) | LIVE -- daily at 07:00 UTC |
-| WF3: Signal & Analysis (8 tasks, parallel DAG) | LIVE -- daily at 08:00 UTC |
+| WF3: Signal & Analysis (9 tasks, 3-branch parallel DAG) | LIVE -- daily at 08:00 UTC (30/40/30 tech+fund+sent) |
 | WF4: Portfolio & Rebalancing (12 tasks, paper trading) | LIVE -- daily at 09:00 UTC |
 | WF5: Monitoring & Reporting (4 tasks, P&L + risk + alerts) | LIVE -- daily at 10:00 UTC |
+| WF6: Backtesting (6 tasks, strategy vs benchmark) | LIVE -- weekly Sunday 11:00 UTC |
 | Historical Backfill | Full 2025 (250 trading days, 2,475 rows) + 2026 YTD |
 | CI/CD Pipeline | 30+ successful runs |
-| Launch Plan Management | 5 active launch plans (all daily) |
+| Launch Plan Management | 6 active launch plans (5 daily + 1 weekly) |
 | Flyte Domains | Only development + production (staging removed) |
-| Unit Tests | 264 tests, 90% coverage |
+| Unit Tests | 347 tests, 90% coverage |
 | Paper Trading | Enabled (WF4_PAPER_TRADING_ENABLED=true since 15.02.2026) |
 | Storage Architecture | PostgreSQL on SD card, MinIO on NVMe SSD (pi5-1tb split) |
+| Sentiment Analysis | ONNX CPU (DistilRoBERTa), Finnhub + Marketaux news providers |
 
 ## Related Repositories
 
@@ -595,9 +672,10 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 | WF1: Data Ingestion | Pi 4 Workers | 100-500m | 128-512Mi | I/O-bound (API calls) |
 | WF2: Universe Screening | Pi 4 Workers | 100-500m | 128-512Mi | CPU-bound (analytics, K-Means) |
 | WF3: Signal (Tech+Fund) | Pi 4 Workers | 100-500m | 128Mi-1Gi | CPU-bound (indicators) + I/O (yfinance) |
-| WF3: Sentiment (Phase 4) | **Pi 5 AI (Hailo)** | TBD | TBD | NPU for ML inference |
+| WF3: Sentiment | Pi 4 Workers | 500m | 768Mi-1536Mi | ONNX Runtime CPU inference (~70MB model) |
 | WF4: Portfolio | Pi 4 Workers | 100-500m | 128Mi-512Mi | CPU-bound (optimization) + I/O (prices) |
 | WF5: Monitoring | Pi 4 Workers | 100-300m | 128Mi-256Mi | Lightweight (DB reads + report gen) |
+| WF6: Backtesting | Pi 4 Workers | 200-300m | 128Mi-256Mi | DB reads + portfolio simulation |
 
 Flyte domains (staging permanently removed):
 - `quant-trading-development`: 2 CPU, 2 Gi, 10 pods max

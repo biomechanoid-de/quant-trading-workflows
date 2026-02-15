@@ -173,6 +173,32 @@ class DailyReport:
 # ============================================================
 
 @dataclass
+class SentimentSignals:
+    """Sentiment analysis signals for a single stock.
+
+    Used by WF3: Signal & Analysis Pipeline (Phase 6).
+    Only primitive fields (str, float, int, bool) — safe in
+    List[SentimentSignals] between Flyte tasks.
+
+    Missing data (zero articles) is signaled by num_articles=0
+    and sentiment_score=50.0 (neutral default).
+    """
+    symbol: str
+    # Article counts
+    num_articles: int              # Total articles analyzed
+    num_positive: int              # Articles classified positive
+    num_neutral: int               # Articles classified neutral
+    num_negative: int              # Articles classified negative
+    # Provider
+    news_provider: str             # "finnhub", "marketaux", or "none"
+    # Composite
+    sentiment_score: float         # 0-100, time-decay-weighted
+    sentiment_signal: str          # "very_positive"/"positive"/"neutral"/"negative"/"very_negative"
+    # Data quality
+    has_sentiment: bool = True     # False if zero articles found
+
+
+@dataclass
 class TechnicalSignals:
     """Technical indicator signals for a single stock.
 
@@ -252,9 +278,14 @@ class SignalResult:
     # Fundamental
     fundamental_score: float          # 0-100
     fundamental_signal: str           # "value", "growth", "balanced"
+    # Sentiment (Phase 6 — defaults for backward compatibility)
+    sentiment_score: float = 50.0     # 0-100 (50 = neutral default)
+    sentiment_signal: str = "neutral" # "very_positive"/.../""very_negative"
+    num_articles: int = 0             # Total articles analyzed
+    news_provider: str = "none"       # "finnhub", "marketaux", "none"
     # Combined
-    combined_signal_score: float      # 0-100 (weighted tech + fund)
-    signal_strength: str              # "strong_buy"/"buy"/"hold"/"sell"/"strong_sell"
+    combined_signal_score: float = 50.0  # 0-100 (weighted tech + fund + sent)
+    signal_strength: str = "hold"     # "strong_buy"/"buy"/"hold"/"sell"/"strong_sell"
     # Quality
     data_quality: str = "complete"    # "complete", "partial", "minimal"
 

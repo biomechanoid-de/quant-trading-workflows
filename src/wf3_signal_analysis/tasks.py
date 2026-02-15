@@ -38,7 +38,7 @@ from typing import Dict, List
 
 from flytekit import task, Resources
 
-from src.shared.models import TechnicalSignals, FundamentalSignals, SignalResult
+from src.shared.models import TechnicalSignals, FundamentalSignals, SentimentSignals, SignalResult
 
 
 # ============================================================
@@ -362,6 +362,135 @@ def fetch_fundamental_data(
 
 
 @task(
+    requests=Resources(cpu="500m", mem="768Mi"),
+    limits=Resources(cpu="1000m", mem="1536Mi"),
+)
+def fetch_sentiment_data(
+    screening_context: Dict[str, str],
+    run_date: str,
+    news_days: int = 7,
+    decay_half_life: float = 3.0,
+) -> List[SentimentSignals]:
+    """Fetch news articles and classify sentiment for all screened stocks.
+
+    For each symbol:
+    1. Fetch news from Finnhub (primary); fall back to Marketaux if empty/error.
+    2. Classify headlines using ONNX DistilBERT-Finance on CPU.
+    3. Aggregate with time-decay weighting into a single sentiment score (0-100).
+
+    Rate limited: 0.5s between API calls (within Finnhub 60/min free tier).
+    Graceful: zero articles -> neutral score (50.0) + has_sentiment=False.
+
+    Args:
+        screening_context: Dict[symbol -> JSON] from load_screening_context.
+        run_date: Signal analysis run date (YYYY-MM-DD).
+        news_days: Days of news history to fetch per symbol (default: 7).
+        decay_half_life: Time-decay half-life in days (default: 3.0).
+
+    Returns:
+        List of SentimentSignals (one per symbol, primitive fields only).
+    """
+    import time
+    from datetime import datetime, timedelta
+
+    from src.shared.config import (
+        FINNHUB_API_KEY, MARKETAUX_API_KEY, SENTIMENT_MODEL_DIR,
+    )
+    from src.shared.providers.finnhub_provider import FinnhubSentimentProvider
+    from src.shared.providers.marketaux_provider import MarketauxSentimentProvider
+    from src.shared.inference.onnx_cpu import OnnxCpuClassifier
+    from src.shared.analytics import (
+        compute_sentiment_score,
+        classify_sentiment_signal,
+        aggregate_article_sentiments,
+    )
+
+    symbols = list(screening_context.keys())
+    if not symbols:
+        return []
+
+    # Initialize providers (only if API keys are set)
+    finnhub = FinnhubSentimentProvider(api_key=FINNHUB_API_KEY) if FINNHUB_API_KEY else None
+    marketaux = MarketauxSentimentProvider(api_key=MARKETAUX_API_KEY) if MARKETAUX_API_KEY else None
+
+    # Initialize classifier
+    classifier = OnnxCpuClassifier(model_dir=SENTIMENT_MODEL_DIR)
+
+    # Date range for news lookup
+    to_date = run_date
+    from_date = (datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=news_days)).strftime("%Y-%m-%d")
+
+    results = []
+    for i, symbol in enumerate(symbols):
+        # Rate limiting: 0.5s between API calls
+        if i > 0:
+            time.sleep(0.5)
+
+        articles = []
+        provider_used = "none"
+
+        # Try Finnhub first
+        if finnhub:
+            try:
+                articles = finnhub.fetch_news(symbol, from_date, to_date)
+                if articles:
+                    provider_used = "finnhub"
+            except Exception:
+                articles = []
+
+        # Fallback to Marketaux if Finnhub returned nothing
+        if not articles and marketaux:
+            try:
+                articles = marketaux.fetch_news(symbol, from_date, to_date)
+                if articles:
+                    provider_used = "marketaux"
+            except Exception:
+                articles = []
+
+        # Classify headlines
+        if articles:
+            headlines = [a.get("headline", "") or a.get("summary", "") for a in articles]
+            headlines = [h for h in headlines if h.strip()]
+
+            if headlines:
+                sentiments = classifier.classify(headlines)
+                enriched = aggregate_article_sentiments(articles[:len(sentiments)], sentiments)
+                score = compute_sentiment_score(enriched, decay_half_life, run_date)
+                signal = classify_sentiment_signal(score)
+                n_pos = sum(1 for s in sentiments if s.get("positive", 0) > 0.5)
+                n_neg = sum(1 for s in sentiments if s.get("negative", 0) > 0.5)
+                n_neu = len(sentiments) - n_pos - n_neg
+
+                results.append(SentimentSignals(
+                    symbol=symbol,
+                    num_articles=len(sentiments),
+                    num_positive=n_pos,
+                    num_neutral=n_neu,
+                    num_negative=n_neg,
+                    news_provider=provider_used,
+                    sentiment_score=round(score, 2),
+                    sentiment_signal=signal,
+                    has_sentiment=True,
+                ))
+                continue
+
+        # No articles -> neutral default
+        results.append(SentimentSignals(
+            symbol=symbol,
+            num_articles=0,
+            num_positive=0,
+            num_neutral=0,
+            num_negative=0,
+            news_provider=provider_used,
+            sentiment_score=50.0,
+            sentiment_signal="neutral",
+            has_sentiment=False,
+        ))
+
+    return results
+
+
+@task(
     requests=Resources(cpu="300m", mem="256Mi"),
     limits=Resources(cpu="500m", mem="512Mi"),
 )
@@ -369,21 +498,25 @@ def combine_signals(
     screening_context: Dict[str, str],
     tech_signals: List[TechnicalSignals],
     fund_signals: List[FundamentalSignals],
+    sent_signals: List[SentimentSignals],
     tech_weight: float,
     fund_weight: float,
+    sent_weight: float,
     run_date: str,
 ) -> List[SignalResult]:
-    """Combine technical and fundamental signals into composite scores.
+    """Combine technical, fundamental, and sentiment signals into composite scores.
 
-    Merges technical (SMA, MACD, Bollinger) and fundamental (P/E, ROE, D/E)
-    analysis with configurable weights (Phase 2: 50/50).
+    Phase 6 weights: tech=0.30, fund=0.40, sent=0.30
+    When sent_weight=0.0, behaves identically to Phase 2 (backward compatible).
 
     Args:
-        screening_context: Dict[symbol → JSON] with WF2 context.
+        screening_context: Dict[symbol -> JSON] with WF2 context.
         tech_signals: List of TechnicalSignals from compute_technical_signals.
         fund_signals: List of FundamentalSignals from fetch_fundamental_data.
-        tech_weight: Weight for technical score (0-1, default: 0.5).
-        fund_weight: Weight for fundamental score (0-1, default: 0.5).
+        sent_signals: List of SentimentSignals from fetch_sentiment_data.
+        tech_weight: Weight for technical score (0-1, default: 0.30).
+        fund_weight: Weight for fundamental score (0-1, default: 0.40).
+        sent_weight: Weight for sentiment score (0-1, default: 0.30).
         run_date: Signal analysis run date.
 
     Returns:
@@ -392,6 +525,7 @@ def combine_signals(
     # Build lookup dicts
     tech_by_symbol = {ts.symbol: ts for ts in tech_signals}
     fund_by_symbol = {fs.symbol: fs for fs in fund_signals}
+    sent_by_symbol = {ss.symbol: ss for ss in sent_signals}
 
     results = []
     for symbol, context_json in screening_context.items():
@@ -401,6 +535,7 @@ def combine_signals(
 
         tech = tech_by_symbol.get(symbol)
         fund = fund_by_symbol.get(symbol)
+        sent = sent_by_symbol.get(symbol)
 
         # Technical score (default to 50 = neutral if missing)
         t_score = tech.technical_score if tech else 50.0
@@ -410,16 +545,27 @@ def combine_signals(
         f_score = fund.fundamental_score if fund else 50.0
         f_signal = fund.fundamental_signal if fund else "balanced"
 
-        # Combined score
-        combined = round(t_score * tech_weight + f_score * fund_weight, 2)
+        # Sentiment score (default to 50 = neutral if missing)
+        s_score = sent.sentiment_score if sent else 50.0
+        s_signal = sent.sentiment_signal if sent else "neutral"
+
+        # Combined score (3-way weighted average)
+        combined = round(
+            t_score * tech_weight + f_score * fund_weight + s_score * sent_weight,
+            2,
+        )
         strength = _classify_signal_strength(combined)
 
         # Data quality assessment
         has_tech = tech is not None and tech.technical_score != 50.0
         has_fund = fund is not None
-        if has_tech and has_fund and fund.has_pe and fund.has_roe:
-            quality = "complete"
-        elif has_tech or has_fund:
+        has_sent = sent is not None and sent.has_sentiment
+        if has_tech and has_fund and (has_sent or sent_weight == 0.0):
+            if fund.has_pe and fund.has_roe:
+                quality = "complete"
+            else:
+                quality = "partial"
+        elif has_tech or has_fund or has_sent:
             quality = "partial"
         else:
             quality = "minimal"
@@ -433,6 +579,10 @@ def combine_signals(
             technical_signal=t_signal,
             fundamental_score=f_score,
             fundamental_signal=f_signal,
+            sentiment_score=s_score,
+            sentiment_signal=s_signal,
+            num_articles=sent.num_articles if sent else 0,
+            news_provider=sent.news_provider if sent else "none",
             combined_signal_score=combined,
             signal_strength=strength,
             data_quality=quality,
@@ -450,6 +600,9 @@ def combine_signals(
 def assemble_signal_result(
     run_date: str,
     signal_results: List[SignalResult],
+    tech_weight: float = 0.3,
+    fund_weight: float = 0.4,
+    sent_weight: float = 0.3,
 ) -> Dict[str, str]:
     """Assemble signal results into a serialized SignalAnalysisResult.
 
@@ -463,11 +616,15 @@ def assemble_signal_result(
     - "num_with_partial_data": count
     - "top_buy_signals": comma-separated symbols
     - "top_sell_signals": comma-separated symbols
+    - "tech_weight", "fund_weight", "sent_weight": signal weights
     - "signal_results_json": JSON array of all SignalResult dicts
 
     Args:
         run_date: Signal analysis run date.
         signal_results: List of SignalResult from combine_signals.
+        tech_weight: Technical signal weight used.
+        fund_weight: Fundamental signal weight used.
+        sent_weight: Sentiment signal weight used.
 
     Returns:
         Dict[str, str] with serialized analysis result.
@@ -493,6 +650,9 @@ def assemble_signal_result(
         "num_with_partial_data": str(num_partial),
         "top_buy_signals": ",".join(buys[:5]),
         "top_sell_signals": ",".join(sells[:5]),
+        "tech_weight": str(tech_weight),
+        "fund_weight": str(fund_weight),
+        "sent_weight": str(sent_weight),
         "signal_results_json": json.dumps(sr_dicts),
     }
 
@@ -528,8 +688,9 @@ def store_signals_to_db(
         "num_symbols_analyzed": int(assembled_result["num_symbols_analyzed"]),
         "num_with_complete_data": int(assembled_result["num_with_complete_data"]),
         "num_with_partial_data": int(assembled_result["num_with_partial_data"]),
-        "tech_weight": 0.5,
-        "fund_weight": 0.5,
+        "tech_weight": float(assembled_result.get("tech_weight", "0.3")),
+        "fund_weight": float(assembled_result.get("fund_weight", "0.4")),
+        "sent_weight": float(assembled_result.get("sent_weight", "0.3")),
     }
 
     rows = store_signal_results(run_date, signal_results, run_metadata)
@@ -577,6 +738,10 @@ def store_signals_to_parquet(
         "technical_signal": pa.array([d["technical_signal"] for d in sr_dicts], type=pa.string()),
         "fundamental_score": pa.array([d["fundamental_score"] for d in sr_dicts], type=pa.float64()),
         "fundamental_signal": pa.array([d["fundamental_signal"] for d in sr_dicts], type=pa.string()),
+        "sentiment_score": pa.array([d.get("sentiment_score", 50.0) for d in sr_dicts], type=pa.float64()),
+        "sentiment_signal": pa.array([d.get("sentiment_signal", "neutral") for d in sr_dicts], type=pa.string()),
+        "num_articles": pa.array([d.get("num_articles", 0) for d in sr_dicts], type=pa.int32()),
+        "news_provider": pa.array([d.get("news_provider", "none") for d in sr_dicts], type=pa.string()),
         "combined_signal_score": pa.array([d["combined_signal_score"] for d in sr_dicts], type=pa.float64()),
         "signal_strength": pa.array([d["signal_strength"] for d in sr_dicts], type=pa.string()),
         "data_quality": pa.array([d["data_quality"] for d in sr_dicts], type=pa.string()),
@@ -623,16 +788,20 @@ def generate_signal_report(
     num_partial = assembled_result["num_with_partial_data"]
     top_buys = assembled_result["top_buy_signals"]
     top_sells = assembled_result["top_sell_signals"]
+    tech_w = assembled_result.get("tech_weight", "0.3")
+    fund_w = assembled_result.get("fund_weight", "0.4")
+    sent_w = assembled_result.get("sent_weight", "0.3")
     sr_dicts = json.loads(assembled_result["signal_results_json"])
 
     lines = [
-        f"{'=' * 55}",
+        f"{'=' * 65}",
         f"  WF3 Signal Analysis Report — {run_date}",
-        f"{'=' * 55}",
+        f"{'=' * 65}",
         f"",
         f"Symbols analyzed:  {num_analyzed}",
         f"Complete data:     {num_complete}",
         f"Partial data:      {num_partial}",
+        f"Weights:           tech={tech_w}  fund={fund_w}  sent={sent_w}",
         f"",
     ]
 
@@ -663,20 +832,21 @@ def generate_signal_report(
 
     # Per-stock details (top 10)
     lines.append("Top Signals by Combined Score:")
-    lines.append(f"  {'Symbol':8s} {'Tech':>5s} {'Fund':>5s} {'Comb':>5s} {'Strength':>12s} {'Quality':>10s}")
-    lines.append(f"  {'-'*8} {'-'*5} {'-'*5} {'-'*5} {'-'*12} {'-'*10}")
+    lines.append(f"  {'Symbol':8s} {'Tech':>5s} {'Fund':>5s} {'Sent':>5s} {'Comb':>5s} {'Strength':>12s} {'Quality':>10s}")
+    lines.append(f"  {'-'*8} {'-'*5} {'-'*5} {'-'*5} {'-'*5} {'-'*12} {'-'*10}")
 
     for d in sr_dicts[:10]:
         lines.append(
             f"  {d['symbol']:8s} "
             f"{d['technical_score']:5.1f} "
             f"{d['fundamental_score']:5.1f} "
+            f"{d.get('sentiment_score', 50.0):5.1f} "
             f"{d['combined_signal_score']:5.1f} "
             f"{d['signal_strength']:>12s} "
             f"{d['data_quality']:>10s}"
         )
 
     lines.append("")
-    lines.append(f"{'=' * 55}")
+    lines.append(f"{'=' * 65}")
 
     return "\n".join(lines)
