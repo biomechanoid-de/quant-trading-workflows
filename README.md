@@ -16,14 +16,14 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
  |  WF1: Data Ingestion           (daily, 06:00 UTC)        [Phase 1]  |
  |   +-> Fetch prices -> Validate -> Store to DB -> Quality check      |
  |                                                                      |
- |  WF2: Universe & Screening     (weekly, Sun 08:00 UTC)   [Phase 2]  |
+ |  WF2: Universe & Screening     (weekly, Sun 07:00 UTC)   [Phase 2]  |
  |   +-> Load prices -> Metrics -> Cluster + Score -> Report           |
  |                                                                      |
- |  WF3: Signal & Analysis        (weekly, Sun 12:00 UTC)   [Phase 2]  |
+ |  WF3: Signal & Analysis        (weekly, Sun 08:00 UTC)   [Phase 2]  |
  |   +-> Load WF2 context -> Technical + Fundamentals (parallel)       |
  |   +-> Combine signals -> Store + Report                             |
  |                                                                      |
- |  WF4: Portfolio & Rebalancing  (weekly, Sun 16:00 UTC)    [Phase 3]  |
+ |  WF4: Portfolio & Rebalancing  (weekly, Sun 09:00 UTC)    [Phase 3]  |
  |   +-> Target weights -> Transaction costs -> Order report           |
  |   +-> Paper trading -> Portfolio snapshot (optional, Phase 4)       |
  |                                                                      |
@@ -387,9 +387,9 @@ Schedules are controlled exclusively via two files:
 | File | Domain | Content |
 |------|--------|---------|
 | `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` -- Cron `0 6 * * *` (daily 06:00 UTC) |
-| `launch_plans/production.py` | production | `wf2_universe_screening_prod_weekly` -- Cron `0 8 * * 0` (Sunday 08:00 UTC) |
-| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_weekly` -- Cron `0 12 * * 0` (Sunday 12:00 UTC) |
-| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_weekly` -- Cron `0 16 * * 0` (Sunday 16:00 UTC) |
+| `launch_plans/production.py` | production | `wf2_universe_screening_prod_weekly` -- Cron `0 7 * * 0` (Sunday 07:00 UTC) |
+| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_weekly` -- Cron `0 8 * * 0` (Sunday 08:00 UTC) |
+| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_weekly` -- Cron `0 9 * * 0` (Sunday 09:00 UTC) |
 | `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
@@ -439,9 +439,9 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 | Component | Status |
 |-----------|--------|
 | WF1: Data Ingestion (5 tasks, dual-write) | Running daily at 06:00 UTC |
-| WF2: Universe & Screening (9 tasks, parallel DAG) | Running weekly Sun 08:00 UTC |
-| WF3: Signal & Analysis (8 tasks, parallel DAG) | Running weekly Sun 12:00 UTC |
-| WF4: Portfolio & Rebalancing (12 tasks, order reports + paper trading) | Running weekly Sun 16:00 UTC |
+| WF2: Universe & Screening (9 tasks, parallel DAG) | Running weekly Sun 07:00 UTC |
+| WF3: Signal & Analysis (8 tasks, parallel DAG) | Running weekly Sun 08:00 UTC |
+| WF4: Portfolio & Rebalancing (12 tasks, order reports + paper trading) | Running weekly Sun 09:00 UTC |
 | WF5: Monitoring Stub | Registered, ready for Phase 5 |
 | Historical Backfill | Full 2025 (250 trading days, 2,475 rows) + 2026 YTD |
 | CI/CD Pipeline | 30+ successful runs |
