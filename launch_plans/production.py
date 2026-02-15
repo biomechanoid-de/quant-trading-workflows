@@ -6,9 +6,9 @@ If no launch plans are defined here, only the default (manual) launch plans exis
 
 Current schedules:
 - WF1 Data Ingestion: Daily at 06:00 UTC (all 49 Phase 2 symbols, before EU market open)
-- WF2 Universe Screening: Weekly Sunday at 07:00 UTC (49 Phase 2 symbols, full screening)
-- WF3 Signal Analysis: Weekly Sunday at 08:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
-- WF4 Portfolio Rebalancing: Weekly Sunday at 09:00 UTC (after WF3, order reports only)
+- WF2 Universe Screening: Weekly Monday at 07:00 UTC (49 Phase 2 symbols, full screening)
+- WF3 Signal Analysis: Weekly Monday at 08:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
+- WF4 Portfolio Rebalancing: Weekly Monday at 09:00 UTC (after WF3, order reports only)
 """
 
 from flytekit import CronSchedule, LaunchPlan
@@ -36,7 +36,7 @@ wf1_prod_daily = LaunchPlan.get_or_create(
     schedule=CronSchedule(schedule="0 6 * * *"),
 )
 
-# WF2 Universe Screening - weekly Sunday at 07:00 UTC (49 Phase 2 symbols)
+# WF2 Universe Screening - weekly Monday at 07:00 UTC (49 Phase 2 symbols)
 # Runs after WF1 has accumulated a week of data
 wf2_prod_weekly = LaunchPlan.get_or_create(
     name="wf2_universe_screening_prod_weekly",
@@ -46,10 +46,10 @@ wf2_prod_weekly = LaunchPlan.get_or_create(
         "lookback_days": 252,
         "run_date": "",
     },
-    schedule=CronSchedule(schedule="0 7 * * 0"),
+    schedule=CronSchedule(schedule="0 7 * * 1"),
 )
 
-# WF3 Signal Analysis - weekly Sunday at 08:00 UTC (1 hour after WF2)
+# WF3 Signal Analysis - weekly Monday at 08:00 UTC (1 hour after WF2)
 # Analyzes top quintile stocks from WF2 with 50% tech + 50% fundamental signals
 wf3_prod_weekly = LaunchPlan.get_or_create(
     name="wf3_signal_analysis_prod_weekly",
@@ -63,10 +63,10 @@ wf3_prod_weekly = LaunchPlan.get_or_create(
         "sma_short": WF3_SMA_SHORT,
         "sma_long": WF3_SMA_LONG,
     },
-    schedule=CronSchedule(schedule="0 8 * * 0"),
+    schedule=CronSchedule(schedule="0 8 * * 1"),
 )
 
-# WF4 Portfolio Rebalancing - weekly Sunday at 09:00 UTC (1 hour after WF3)
+# WF4 Portfolio Rebalancing - weekly Monday at 09:00 UTC (1 hour after WF3)
 # Reads WF3 signal results, computes target portfolio, generates order report
 # ORDER REPORTS ONLY — does not execute trades automatically
 wf4_prod_weekly = LaunchPlan.get_or_create(
@@ -84,5 +84,5 @@ wf4_prod_weekly = LaunchPlan.get_or_create(
         "min_trade_value": WF4_MIN_TRADE_VALUE,
         "paper_trading": WF4_PAPER_TRADING_ENABLED,
     },
-    schedule=CronSchedule(schedule="0 9 * * 0"),
+    schedule=CronSchedule(schedule="0 9 * * 1"),
 )
