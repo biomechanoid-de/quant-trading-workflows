@@ -10,7 +10,7 @@ Current schedules:
 - WF3 Signal Analysis: Daily at 08:00 UTC (after WF2, 30/40/30 tech+fund+sent)
 - WF4 Portfolio Rebalancing: Daily at 09:00 UTC (after WF3, paper trading enabled)
 - WF5 Monitoring & Reporting: Daily at 10:00 UTC (after WF4, P&L + risk + alerts)
-- WF6 Backtesting: Weekly Sunday 11:00 UTC (signal strategy vs buy-and-hold)
+- WF6 Backtesting: Daily at 11:00 UTC (signal strategy vs buy-and-hold)
 """
 
 from flytekit import CronSchedule, LaunchPlan
@@ -118,11 +118,11 @@ wf5_prod_daily = LaunchPlan.get_or_create(
     schedule=CronSchedule(schedule="0 10 * * *"),
 )
 
-# WF6 Backtesting - weekly Sunday at 11:00 UTC
+# WF6 Backtesting - daily at 11:00 UTC (1 hour after WF5)
 # Replays historical signal results through pension fund model,
 # compares vs equal-weight buy-and-hold benchmark
-wf6_prod_weekly = LaunchPlan.get_or_create(
-    name="wf6_backtesting_prod_weekly",
+wf6_prod_daily = LaunchPlan.get_or_create(
+    name="wf6_backtesting_prod_daily",
     workflow=backtesting_workflow,
     default_inputs={
         "start_date": "2026-01-01",
@@ -132,5 +132,5 @@ wf6_prod_weekly = LaunchPlan.get_or_create(
         "max_sector_pct": WF4_MAX_SECTOR_PCT,
         "cash_reserve_pct": WF4_CASH_RESERVE_PCT,
     },
-    schedule=CronSchedule(schedule="0 11 * * 0"),
+    schedule=CronSchedule(schedule="0 11 * * *"),
 )
