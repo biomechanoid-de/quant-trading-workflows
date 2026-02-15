@@ -363,7 +363,7 @@ def fetch_fundamental_data(
 
 @task(
     requests=Resources(cpu="500m", mem="768Mi"),
-    limits=Resources(cpu="1000m", mem="1536Mi"),
+    limits=Resources(cpu="1000m", mem="1024Mi"),
 )
 def fetch_sentiment_data(
     screening_context: Dict[str, str],
