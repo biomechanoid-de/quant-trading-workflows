@@ -216,3 +216,27 @@ CREATE TABLE IF NOT EXISTS rebalancing_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rebalancing_runs_date ON rebalancing_runs(run_date);
+
+-- ============================================================
+-- Monitoring Runs (WF5: Monitoring & Reporting)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS monitoring_runs (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL UNIQUE,
+    portfolio_value DECIMAL(14,2),
+    daily_pnl DECIMAL(12,2),
+    daily_pnl_pct DECIMAL(8,4),
+    mtd_pnl DECIMAL(12,2),
+    ytd_pnl DECIMAL(12,2),
+    sharpe_30d DECIMAL(10,6),
+    sortino_30d DECIMAL(10,6),
+    max_drawdown_30d DECIMAL(10,6),
+    var_95 DECIMAL(12,2),
+    num_positions INT,
+    num_alerts INT,
+    alerts_json TEXT,
+    report_s3_path TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitoring_runs_date ON monitoring_runs(run_date);

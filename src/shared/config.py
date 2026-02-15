@@ -131,6 +131,17 @@ WF4_IMPACT_BPS_PER_1K = float(os.environ.get("WF4_IMPACT_BPS_PER_1K", "0.1")) # 
 WF4_PAPER_TRADING_ENABLED = os.environ.get("WF4_PAPER_TRADING_ENABLED", "false").lower() == "true"
 
 # ============================================================
+# WF5: Monitoring & Reporting Defaults
+# ============================================================
+
+WF5_DRAWDOWN_ALERT_PCT = float(os.environ.get("WF5_DRAWDOWN_ALERT_PCT", "0.05"))   # Alert if 30d drawdown > 5%
+WF5_POSITION_ALERT_PCT = float(os.environ.get("WF5_POSITION_ALERT_PCT", "0.07"))   # Alert if single position > 7%
+WF5_VAR_ALERT_PCT = float(os.environ.get("WF5_VAR_ALERT_PCT", "0.03"))             # Alert if VaR(95%) > 3% of portfolio
+WF5_LOSS_ALERT_PCT = float(os.environ.get("WF5_LOSS_ALERT_PCT", "0.10"))           # Alert if unrealized loss > 10%
+WF5_RISK_FREE_RATE = float(os.environ.get("WF5_RISK_FREE_RATE", "0.05"))           # Annualized risk-free rate
+WF5_LOOKBACK_DAYS = int(os.environ.get("WF5_LOOKBACK_DAYS", "30"))                 # Risk metric lookback (trading days)
+
+# ============================================================
 # GICS Sector Mapping for PHASE2_SYMBOLS
 # ============================================================
 # Hardcoded mapping — more reliable than yfinance lookups and avoids rate limiting.

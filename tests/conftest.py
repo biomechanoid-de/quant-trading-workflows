@@ -2,8 +2,9 @@
 
 Provides reusable test data for WF1 (MarketDataBatch),
 WF2 (ScreeningConfig, StockMetrics, price_data),
-WF3 (TechnicalSignals, FundamentalSignals, screening_context), and
-WF4 (signal_context, portfolio_state, price_data for rebalancing)
+WF3 (TechnicalSignals, FundamentalSignals, screening_context),
+WF4 (signal_context, portfolio_state, price_data for rebalancing), and
+WF5 (portfolio_snapshots, positions, pnl_data, risk_data, alert_data)
 without network or database access.
 """
 
@@ -409,4 +410,150 @@ def sample_paper_trade_result_executed():
         ]),
         "total_value_after": "24969.50",
         "run_date": "2026-02-16",
+    }
+
+
+# ============================================================
+# WF5: Monitoring & Reporting Fixtures
+# ============================================================
+
+@pytest.fixture
+def sample_portfolio_snapshots():
+    """10 weekly portfolio snapshots for WF5 testing.
+
+    Simulates a portfolio growing from 25000 to ~25400 over 10 weeks
+    with realistic small daily P&L variations.
+    """
+    from datetime import date, timedelta
+    base = 25000.0
+    start = date(2026, 1, 5)
+    snapshots = []
+    for i in range(10):
+        d = start + timedelta(weeks=i)
+        value = base + i * 50 - (10 if i % 3 == 0 else 0)
+        cash = 5000.0
+        invested = value - cash
+        daily_pnl = 50.0 if i > 0 else 0.0
+        if i % 3 == 0 and i > 0:
+            daily_pnl = -60.0
+        snapshots.append((
+            d, value, cash, invested, daily_pnl, 0.0, 5
+        ))
+    return snapshots
+
+
+@pytest.fixture
+def sample_positions_with_market_data():
+    """5 positions with latest market data for WF5 testing."""
+    return [
+        ("AAPL", 6.0, 190.0, 195.0, "Technology", 196.50),
+        ("MSFT", 3.0, 400.0, 415.0, "Technology", 418.00),
+        ("NVDA", 1.0, 800.0, 850.0, "Technology", 855.00),
+        ("JPM", 5.0, 190.0, 195.0, "Financials", 197.00),
+        ("PG", 8.0, 150.0, 148.0, "Consumer Staples", 147.00),
+    ]
+
+
+@pytest.fixture
+def sample_wf5_pnl_data():
+    """Dict[str, str] output from calculate_pnl for downstream task tests."""
+    import json
+    return {
+        "run_date": "2026-02-16",
+        "portfolio_value": "25400.0",
+        "cash": "5000.0",
+        "invested": "20400.0",
+        "daily_pnl": "50.0",
+        "daily_pnl_pct": "0.1974",
+        "mtd_pnl": "200.0",
+        "ytd_pnl": "400.0",
+        "num_positions": "5",
+        "top_winners": "NVDA (+55.00)|MSFT (+54.00)|AAPL (+39.00)",
+        "top_losers": "PG (-24.00)",
+        "positions_pnl_json": json.dumps({
+            "AAPL": {"shares": 6, "avg_cost": 190.0, "current_price": 196.5,
+                     "unrealized_pnl": 39.0, "position_value": 1179.0, "sector": "Technology"},
+            "MSFT": {"shares": 3, "avg_cost": 400.0, "current_price": 418.0,
+                     "unrealized_pnl": 54.0, "position_value": 1254.0, "sector": "Technology"},
+            "NVDA": {"shares": 1, "avg_cost": 800.0, "current_price": 855.0,
+                     "unrealized_pnl": 55.0, "position_value": 855.0, "sector": "Technology"},
+            "JPM": {"shares": 5, "avg_cost": 190.0, "current_price": 197.0,
+                    "unrealized_pnl": 35.0, "position_value": 985.0, "sector": "Financials"},
+            "PG": {"shares": 8, "avg_cost": 150.0, "current_price": 147.0,
+                   "unrealized_pnl": -24.0, "position_value": 1176.0, "sector": "Consumer Staples"},
+        }),
+        "snapshots_json": json.dumps([
+            {"date": "2026-01-05", "total_value": 25000.0},
+            {"date": "2026-01-12", "total_value": 25050.0},
+            {"date": "2026-01-19", "total_value": 25100.0},
+            {"date": "2026-01-26", "total_value": 25090.0},
+            {"date": "2026-02-02", "total_value": 25200.0},
+            {"date": "2026-02-09", "total_value": 25250.0},
+            {"date": "2026-02-16", "total_value": 25400.0},
+        ]),
+        "no_data": "false",
+    }
+
+
+@pytest.fixture
+def sample_wf5_risk_data():
+    """Dict[str, str] output from compute_risk_metrics for downstream tests."""
+    import json
+    return {
+        "sharpe_30d": "1.5",
+        "sortino_30d": "2.1",
+        "max_drawdown_30d": "-0.004",
+        "var_95": "-45.0",
+        "sector_concentration_json": json.dumps({
+            "Technology": 0.6015,
+            "Financials": 0.1803,
+            "Consumer Staples": 0.2153,
+        }),
+        "largest_sector": "Technology",
+        "largest_sector_pct": "0.6015",
+        "data_points": "6",
+    }
+
+
+@pytest.fixture
+def sample_wf5_alert_data_no_alerts():
+    """Dict[str, str] with zero alerts."""
+    return {
+        "num_alerts": "0",
+        "alerts_csv": "",
+        "has_critical": "false",
+    }
+
+
+@pytest.fixture
+def sample_wf5_alert_data_with_alerts():
+    """Dict[str, str] with multiple alerts triggered."""
+    return {
+        "num_alerts": "2",
+        "alerts_csv": (
+            "DRAWDOWN: 30d max drawdown is 6.0% (threshold: 5%)"
+            "|LOSS: NKE has -12.0% unrealized loss (threshold: -10%)"
+        ),
+        "has_critical": "true",
+    }
+
+
+@pytest.fixture
+def sample_wf5_pnl_data_no_data():
+    """Dict[str, str] when no portfolio snapshots exist."""
+    return {
+        "run_date": "2026-02-16",
+        "portfolio_value": "0.0",
+        "cash": "0.0",
+        "invested": "0.0",
+        "daily_pnl": "0.0",
+        "daily_pnl_pct": "0.0",
+        "mtd_pnl": "0.0",
+        "ytd_pnl": "0.0",
+        "num_positions": "0",
+        "top_winners": "",
+        "top_losers": "",
+        "positions_pnl_json": "{}",
+        "snapshots_json": "[]",
+        "no_data": "true",
     }

@@ -732,3 +732,135 @@ def get_latest_market_data(symbol: str, days: int = 30) -> list:
     finally:
         cursor.close()
         conn.close()
+
+
+# ============================================================
+# WF5: Monitoring & Reporting DB Functions
+# ============================================================
+
+
+def get_portfolio_snapshots(lookback_days: int = 90) -> list:
+    """Get portfolio snapshots for the last N calendar days.
+
+    Used by WF5 for P&L calculation and risk metric computation.
+
+    Args:
+        lookback_days: Number of calendar days to look back.
+
+    Returns:
+        List of tuples (date, total_value, cash, invested, daily_pnl,
+        cumulative_dividends, num_positions) ordered by date ASC.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """SELECT date, total_value, cash, invested, daily_pnl,
+                      cumulative_dividends, num_positions
+               FROM portfolio_snapshots
+               WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+               ORDER BY date ASC""",
+            (lookback_days,),
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_positions_with_market_data() -> list:
+    """Get current positions joined with latest market data.
+
+    Used by WF5 for position-level P&L and concentration analysis.
+    LEFT JOINs with market_data to get the most recent close price
+    even if WF4 hasn't updated current_price recently.
+
+    Returns:
+        List of tuples (symbol, shares, avg_cost, current_price,
+        sector, latest_close).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """SELECT p.symbol, p.shares, p.avg_cost, p.current_price,
+                      p.sector,
+                      COALESCE(md.close, p.current_price) AS latest_close
+               FROM positions p
+               LEFT JOIN LATERAL (
+                   SELECT close FROM market_data
+                   WHERE symbol = p.symbol AND close IS NOT NULL
+                   ORDER BY date DESC LIMIT 1
+               ) md ON true
+               ORDER BY p.symbol ASC"""
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def store_monitoring_run(run_date: str, monitoring_data: dict) -> int:
+    """Store WF5 monitoring run results.
+
+    Uses UPSERT for idempotency on Flyte retries.
+
+    Args:
+        run_date: Monitoring run date (YYYY-MM-DD).
+        monitoring_data: Dict with portfolio_value, daily_pnl, daily_pnl_pct,
+            mtd_pnl, ytd_pnl, sharpe_30d, sortino_30d, max_drawdown_30d,
+            var_95, num_positions, num_alerts, alerts_json, report_s3_path.
+
+    Returns:
+        1 on success.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """INSERT INTO monitoring_runs
+                   (run_date, portfolio_value, daily_pnl, daily_pnl_pct,
+                    mtd_pnl, ytd_pnl, sharpe_30d, sortino_30d,
+                    max_drawdown_30d, var_95, num_positions, num_alerts,
+                    alerts_json, report_s3_path)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (run_date) DO UPDATE SET
+                   portfolio_value = EXCLUDED.portfolio_value,
+                   daily_pnl = EXCLUDED.daily_pnl,
+                   daily_pnl_pct = EXCLUDED.daily_pnl_pct,
+                   mtd_pnl = EXCLUDED.mtd_pnl,
+                   ytd_pnl = EXCLUDED.ytd_pnl,
+                   sharpe_30d = EXCLUDED.sharpe_30d,
+                   sortino_30d = EXCLUDED.sortino_30d,
+                   max_drawdown_30d = EXCLUDED.max_drawdown_30d,
+                   var_95 = EXCLUDED.var_95,
+                   num_positions = EXCLUDED.num_positions,
+                   num_alerts = EXCLUDED.num_alerts,
+                   alerts_json = EXCLUDED.alerts_json,
+                   report_s3_path = EXCLUDED.report_s3_path,
+                   created_at = NOW()""",
+            (
+                run_date,
+                monitoring_data.get("portfolio_value", 0.0),
+                monitoring_data.get("daily_pnl", 0.0),
+                monitoring_data.get("daily_pnl_pct", 0.0),
+                monitoring_data.get("mtd_pnl", 0.0),
+                monitoring_data.get("ytd_pnl", 0.0),
+                monitoring_data.get("sharpe_30d", 0.0),
+                monitoring_data.get("sortino_30d", 0.0),
+                monitoring_data.get("max_drawdown_30d", 0.0),
+                monitoring_data.get("var_95", 0.0),
+                monitoring_data.get("num_positions", 0),
+                monitoring_data.get("num_alerts", 0),
+                monitoring_data.get("alerts_json", "[]"),
+                monitoring_data.get("report_s3_path", ""),
+            ),
+        )
+        conn.commit()
+        return 1
+    finally:
+        cursor.close()
+        conn.close()

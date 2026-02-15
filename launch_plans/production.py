@@ -9,6 +9,7 @@ Current schedules:
 - WF2 Universe Screening: Weekly Monday at 07:00 UTC (49 Phase 2 symbols, full screening)
 - WF3 Signal Analysis: Weekly Monday at 08:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
 - WF4 Portfolio Rebalancing: Weekly Monday at 09:00 UTC (after WF3, order reports only)
+- WF5 Monitoring & Reporting: Weekly Monday at 10:00 UTC (after WF4, P&L + risk + alerts)
 """
 
 from flytekit import CronSchedule, LaunchPlan
@@ -21,11 +22,15 @@ from src.shared.config import (
     WF4_INITIAL_CAPITAL, WF4_MAX_POSITION_PCT, WF4_MAX_SECTOR_PCT,
     WF4_CASH_RESERVE_PCT, WF4_COMMISSION_PER_SHARE, WF4_EXCHANGE_FEE_BPS,
     WF4_IMPACT_BPS_PER_1K, WF4_MIN_TRADE_VALUE, WF4_PAPER_TRADING_ENABLED,
+    WF5_LOOKBACK_DAYS, WF5_RISK_FREE_RATE,
+    WF5_DRAWDOWN_ALERT_PCT, WF5_POSITION_ALERT_PCT,
+    WF5_VAR_ALERT_PCT, WF5_LOSS_ALERT_PCT,
 )
 from src.wf1_data_ingestion.workflow import data_ingestion_workflow
 from src.wf2_universe_screening.workflow import universe_screening_workflow
 from src.wf3_signal_analysis.workflow import signal_analysis_workflow
 from src.wf4_portfolio_rebalancing.workflow import portfolio_rebalancing_workflow
+from src.wf5_monitoring.workflow import monitoring_workflow
 
 # WF1 Data Ingestion - daily at 06:00 UTC (all 49 Phase 2 symbols)
 # Expanded from PHASE1 (10) to PHASE2 (49) so WF2 has full universe data
@@ -85,4 +90,21 @@ wf4_prod_weekly = LaunchPlan.get_or_create(
         "paper_trading": WF4_PAPER_TRADING_ENABLED,
     },
     schedule=CronSchedule(schedule="0 9 * * 1"),
+)
+
+# WF5 Monitoring & Reporting - weekly Monday at 10:00 UTC (1 hour after WF4)
+# Reads WF4 portfolio snapshots, computes risk metrics, checks alerts, generates report
+wf5_prod_weekly = LaunchPlan.get_or_create(
+    name="wf5_monitoring_prod_weekly",
+    workflow=monitoring_workflow,
+    default_inputs={
+        "run_date": "",
+        "lookback_days": WF5_LOOKBACK_DAYS,
+        "risk_free_rate": WF5_RISK_FREE_RATE,
+        "drawdown_threshold": WF5_DRAWDOWN_ALERT_PCT,
+        "position_threshold": WF5_POSITION_ALERT_PCT,
+        "var_threshold": WF5_VAR_ALERT_PCT,
+        "loss_threshold": WF5_LOSS_ALERT_PCT,
+    },
+    schedule=CronSchedule(schedule="0 10 * * 1"),
 )
