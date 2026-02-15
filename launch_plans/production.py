@@ -4,12 +4,12 @@ Only define launch plans here that should run on a schedule in production.
 CI/CD registers this file to the production domain on push to main.
 If no launch plans are defined here, only the default (manual) launch plans exist.
 
-Current schedules:
+Current schedules (all daily):
 - WF1 Data Ingestion: Daily at 06:00 UTC (all 49 Phase 2 symbols, before EU market open)
-- WF2 Universe Screening: Weekly Monday at 07:00 UTC (49 Phase 2 symbols, full screening)
-- WF3 Signal Analysis: Weekly Monday at 08:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
-- WF4 Portfolio Rebalancing: Weekly Monday at 09:00 UTC (after WF3, paper trading enabled)
-- WF5 Monitoring & Reporting: Weekly Monday at 10:00 UTC (after WF4, P&L + risk + alerts)
+- WF2 Universe Screening: Daily at 07:00 UTC (49 Phase 2 symbols, full screening)
+- WF3 Signal Analysis: Daily at 08:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
+- WF4 Portfolio Rebalancing: Daily at 09:00 UTC (after WF3, paper trading enabled)
+- WF5 Monitoring & Reporting: Daily at 10:00 UTC (after WF4, P&L + risk + alerts)
 """
 
 from flytekit import CronSchedule, LaunchPlan
@@ -41,23 +41,23 @@ wf1_prod_daily = LaunchPlan.get_or_create(
     schedule=CronSchedule(schedule="0 6 * * *"),
 )
 
-# WF2 Universe Screening - weekly Monday at 07:00 UTC (49 Phase 2 symbols)
-# Runs after WF1 has accumulated a week of data
-wf2_prod_weekly = LaunchPlan.get_or_create(
-    name="wf2_universe_screening_prod_weekly",
+# WF2 Universe Screening - daily at 07:00 UTC (49 Phase 2 symbols)
+# Runs after WF1 has ingested today's data
+wf2_prod_daily = LaunchPlan.get_or_create(
+    name="wf2_universe_screening_prod_daily",
     workflow=universe_screening_workflow,
     default_inputs={
         "symbols": PHASE2_SYMBOLS,
         "lookback_days": 252,
         "run_date": "",
     },
-    schedule=CronSchedule(schedule="0 7 * * 1"),
+    schedule=CronSchedule(schedule="0 7 * * *"),
 )
 
-# WF3 Signal Analysis - weekly Monday at 08:00 UTC (1 hour after WF2)
+# WF3 Signal Analysis - daily at 08:00 UTC (1 hour after WF2)
 # Analyzes top quintile stocks from WF2 with 50% tech + 50% fundamental signals
-wf3_prod_weekly = LaunchPlan.get_or_create(
-    name="wf3_signal_analysis_prod_weekly",
+wf3_prod_daily = LaunchPlan.get_or_create(
+    name="wf3_signal_analysis_prod_daily",
     workflow=signal_analysis_workflow,
     default_inputs={
         "run_date": "",
@@ -68,14 +68,14 @@ wf3_prod_weekly = LaunchPlan.get_or_create(
         "sma_short": WF3_SMA_SHORT,
         "sma_long": WF3_SMA_LONG,
     },
-    schedule=CronSchedule(schedule="0 8 * * 1"),
+    schedule=CronSchedule(schedule="0 8 * * *"),
 )
 
-# WF4 Portfolio Rebalancing - weekly Monday at 09:00 UTC (1 hour after WF3)
+# WF4 Portfolio Rebalancing - daily at 09:00 UTC (1 hour after WF3)
 # Reads WF3 signal results, computes target portfolio, generates order report
 # Paper trading enabled — executes simulated trades and snapshots portfolio
-wf4_prod_weekly = LaunchPlan.get_or_create(
-    name="wf4_portfolio_rebalancing_prod_weekly",
+wf4_prod_daily = LaunchPlan.get_or_create(
+    name="wf4_portfolio_rebalancing_prod_daily",
     workflow=portfolio_rebalancing_workflow,
     default_inputs={
         "run_date": "",
@@ -89,13 +89,13 @@ wf4_prod_weekly = LaunchPlan.get_or_create(
         "min_trade_value": WF4_MIN_TRADE_VALUE,
         "paper_trading": WF4_PAPER_TRADING_ENABLED,
     },
-    schedule=CronSchedule(schedule="0 9 * * 1"),
+    schedule=CronSchedule(schedule="0 9 * * *"),
 )
 
-# WF5 Monitoring & Reporting - weekly Monday at 10:00 UTC (1 hour after WF4)
+# WF5 Monitoring & Reporting - daily at 10:00 UTC (1 hour after WF4)
 # Reads WF4 portfolio snapshots, computes risk metrics, checks alerts, generates report
-wf5_prod_weekly = LaunchPlan.get_or_create(
-    name="wf5_monitoring_prod_weekly",
+wf5_prod_daily = LaunchPlan.get_or_create(
+    name="wf5_monitoring_prod_daily",
     workflow=monitoring_workflow,
     default_inputs={
         "run_date": "",
@@ -106,5 +106,5 @@ wf5_prod_weekly = LaunchPlan.get_or_create(
         "var_threshold": WF5_VAR_ALERT_PCT,
         "loss_threshold": WF5_LOSS_ALERT_PCT,
     },
-    schedule=CronSchedule(schedule="0 10 * * 1"),
+    schedule=CronSchedule(schedule="0 10 * * *"),
 )

@@ -175,25 +175,25 @@ jobs:
             --project ${{ env.FLYTE_PROJECT }} \
             --domain production \
             --activate \
-            wf2_universe_screening_prod_weekly ${{ github.sha }}
+            wf2_universe_screening_prod_daily ${{ github.sha }}
 
           pyflyte launchplan \
             --project ${{ env.FLYTE_PROJECT }} \
             --domain production \
             --activate \
-            wf3_signal_analysis_prod_weekly ${{ github.sha }}
+            wf3_signal_analysis_prod_daily ${{ github.sha }}
 
           pyflyte launchplan \
             --project ${{ env.FLYTE_PROJECT }} \
             --domain production \
             --activate \
-            wf4_portfolio_rebalancing_prod_weekly ${{ github.sha }}
+            wf4_portfolio_rebalancing_prod_daily ${{ github.sha }}
 
           pyflyte launchplan \
             --project ${{ env.FLYTE_PROJECT }} \
             --domain production \
             --activate \
-            wf5_monitoring_prod_weekly ${{ github.sha }}
+            wf5_monitoring_prod_daily ${{ github.sha }}
       - name: Summary
         run: |
           echo "## Deployed to Production" >> $GITHUB_STEP_SUMMARY
