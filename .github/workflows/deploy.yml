@@ -188,6 +188,12 @@ jobs:
             --domain production \
             --activate \
             wf4_portfolio_rebalancing_prod_weekly ${{ github.sha }}
+
+          pyflyte launchplan \
+            --project ${{ env.FLYTE_PROJECT }} \
+            --domain production \
+            --activate \
+            wf5_monitoring_prod_weekly ${{ github.sha }}
       - name: Summary
         run: |
           echo "## Deployed to Production" >> $GITHUB_STEP_SUMMARY
