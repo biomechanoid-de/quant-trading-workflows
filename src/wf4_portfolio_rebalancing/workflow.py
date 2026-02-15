@@ -5,7 +5,7 @@ Pipeline:
     -> calculate_target_weights -> fetch_current_prices
     -> generate_trade_orders -> assemble_rebalancing_result
     -> [store_rebalancing_to_db || store_rebalancing_to_parquet || generate_order_report]
-    -> execute_paper_trades -> snapshot_portfolio
+    -> execute_paper_trades -> process_dividends -> snapshot_portfolio
 
 Key design: System generates ORDER REPORTS. When paper_trading=True,
 also simulates trade execution, updates positions, and tracks performance.
@@ -24,6 +24,7 @@ from src.shared.config import (
     WF4_IMPACT_BPS_PER_1K,
     WF4_MIN_TRADE_VALUE,
     WF4_PAPER_TRADING_ENABLED,
+    WF4_DIVIDEND_REINVEST,
 )
 from src.wf4_portfolio_rebalancing.tasks import (
     resolve_run_date,
@@ -37,6 +38,7 @@ from src.wf4_portfolio_rebalancing.tasks import (
     store_rebalancing_to_parquet,
     generate_order_report,
     execute_paper_trades,
+    process_dividends,
     snapshot_portfolio,
 )
 
@@ -53,6 +55,7 @@ def portfolio_rebalancing_workflow(
     impact_bps_per_1k: float = WF4_IMPACT_BPS_PER_1K,
     min_trade_value: float = WF4_MIN_TRADE_VALUE,
     paper_trading: bool = WF4_PAPER_TRADING_ENABLED,
+    dividend_reinvest: bool = WF4_DIVIDEND_REINVEST,
 ) -> str:
     """WF4: Weekly portfolio rebalancing workflow.
 
@@ -75,7 +78,8 @@ def portfolio_rebalancing_workflow(
         exchange_fee_bps: Exchange fee bps (default: 3.0).
         impact_bps_per_1k: Market impact per $1000 (default: 0.1).
         min_trade_value: Minimum trade value EUR (default: 100).
-        paper_trading: Enable paper trade simulation (default: False).
+        paper_trading: Enable paper trade simulation (default: True).
+        dividend_reinvest: When True, reinvest dividends (DRIP). Default: False (cash).
 
     Returns:
         Order report as markdown string.
@@ -140,9 +144,19 @@ def portfolio_rebalancing_workflow(
         impact_bps_per_1k=impact_bps_per_1k,
     )
 
-    # Step 8: Portfolio snapshot (Phase 4)
-    snapshot_result = snapshot_portfolio(
+    # Step 7.5: Process dividends
+    # Matches pending dividends against positions, credits cash or DRIP.
+    dividend_result = process_dividends(
         paper_trade_result=paper_result,
+        paper_trading=paper_trading,
+        dividend_reinvest=dividend_reinvest,
+        initial_capital=initial_capital,
+    )
+
+    # Step 8: Portfolio snapshot (Phase 4)
+    # Uses dividend_result which includes updated cash/positions after dividends.
+    snapshot_result = snapshot_portfolio(
+        paper_trade_result=dividend_result,
         paper_trading=paper_trading,
         initial_capital=initial_capital,
     )

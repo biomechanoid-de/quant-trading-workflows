@@ -50,12 +50,15 @@ class DataProvider(ABC):
 
     @abstractmethod
     def fetch_dividends(self, symbol: str) -> list:
-        """Fetch dividend history for a single symbol.
+        """Fetch recent dividend history for a single symbol.
 
         Args:
             symbol: Stock ticker symbol.
 
         Returns:
-            List of dividend events.
+            List of dicts with keys:
+                - symbol: str (ticker)
+                - ex_date: str (YYYY-MM-DD)
+                - amount_per_share: float
         """
         ...

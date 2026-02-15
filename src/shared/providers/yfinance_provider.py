@@ -155,8 +155,41 @@ class YFinanceProvider(DataProvider):
             return defaults
 
     def fetch_dividends(self, symbol: str) -> list:
-        """Fetch dividend history - stub for Phase 3.
+        """Fetch recent dividend events for a symbol via yfinance.
 
-        Will be implemented with ex-dates, amounts, and payout history.
+        Returns dividends with ex-dates in the last 90 days.
+        Uses ticker.dividends which returns a pandas Series
+        (DatetimeIndex -> float amount per share).
+
+        Args:
+            symbol: Stock ticker symbol.
+
+        Returns:
+            List of dicts with keys: symbol, ex_date, amount_per_share.
         """
-        return []
+        import time
+        from datetime import datetime, timedelta
+
+        import yfinance as yf
+
+        try:
+            ticker = yf.Ticker(symbol)
+            dividends = ticker.dividends
+            if dividends is None or dividends.empty:
+                return []
+
+            cutoff = datetime.now() - timedelta(days=90)
+            recent = dividends[dividends.index >= cutoff]
+
+            results = []
+            for ex_date, amount in recent.items():
+                results.append({
+                    "symbol": symbol,
+                    "ex_date": ex_date.strftime("%Y-%m-%d"),
+                    "amount_per_share": round(float(amount), 4),
+                })
+
+            time.sleep(0.2)
+            return results
+        except Exception:
+            return []

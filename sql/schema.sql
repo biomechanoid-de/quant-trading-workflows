@@ -77,11 +77,14 @@ CREATE TABLE IF NOT EXISTS dividends (
     amount_per_share DECIMAL(8,4),
     shares_held DECIMAL(12,4),
     total_amount DECIMAL(12,4),
-    reinvested BOOLEAN DEFAULT FALSE
+    reinvested BOOLEAN DEFAULT FALSE,
+    processed BOOLEAN DEFAULT FALSE,
+    UNIQUE(symbol, ex_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_dividends_symbol ON dividends(symbol);
 CREATE INDEX IF NOT EXISTS idx_dividends_ex_date ON dividends(ex_date);
+CREATE INDEX IF NOT EXISTS idx_dividends_pending ON dividends(processed, ex_date);
 
 -- ============================================================
 -- Daily Portfolio Snapshots (WF5: Monitoring & Reporting)

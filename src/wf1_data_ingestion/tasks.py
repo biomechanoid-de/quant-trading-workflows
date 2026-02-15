@@ -197,3 +197,38 @@ def check_data_quality(batch: MarketDataBatch) -> str:
 
     lines.append("=" * 45)
     return "\n".join(lines)
+
+
+@task(
+    requests=Resources(cpu="200m", mem="256Mi"),
+    limits=Resources(cpu="500m", mem="512Mi"),
+)
+def fetch_dividend_events(symbols: List[str], date: str) -> str:
+    """Fetch recent dividend events for all symbols and store to DB.
+
+    Queries each symbol for dividends with ex-dates in the last 90 days
+    via the provider abstraction, then stores new events to the dividends
+    table with processed=FALSE for later matching in WF4.
+
+    Args:
+        symbols: List of stock ticker symbols to check.
+        date: Reference date (YYYY-MM-DD). Empty string = today.
+
+    Returns:
+        Summary string with count of new dividend events found.
+    """
+    from src.shared.providers.yfinance_provider import YFinanceProvider
+    from src.shared.db import store_dividends
+
+    provider = YFinanceProvider()
+    all_dividends = []
+
+    for symbol in symbols:
+        divs = provider.fetch_dividends(symbol)
+        all_dividends.extend(divs)
+
+    if all_dividends:
+        rows = store_dividends(all_dividends)
+        return f"Found {len(all_dividends)} dividend events, stored {rows} rows"
+
+    return "No dividend events found"
