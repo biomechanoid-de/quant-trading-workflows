@@ -8,7 +8,7 @@ Current schedules:
 - WF1 Data Ingestion: Daily at 06:00 UTC (all 49 Phase 2 symbols, before EU market open)
 - WF2 Universe Screening: Weekly Monday at 07:00 UTC (49 Phase 2 symbols, full screening)
 - WF3 Signal Analysis: Weekly Monday at 08:00 UTC (after WF2, top quintiles, 50/50 tech+fund)
-- WF4 Portfolio Rebalancing: Weekly Monday at 09:00 UTC (after WF3, order reports only)
+- WF4 Portfolio Rebalancing: Weekly Monday at 09:00 UTC (after WF3, paper trading enabled)
 - WF5 Monitoring & Reporting: Weekly Monday at 10:00 UTC (after WF4, P&L + risk + alerts)
 """
 
@@ -73,7 +73,7 @@ wf3_prod_weekly = LaunchPlan.get_or_create(
 
 # WF4 Portfolio Rebalancing - weekly Monday at 09:00 UTC (1 hour after WF3)
 # Reads WF3 signal results, computes target portfolio, generates order report
-# ORDER REPORTS ONLY — does not execute trades automatically
+# Paper trading enabled — executes simulated trades and snapshots portfolio
 wf4_prod_weekly = LaunchPlan.get_or_create(
     name="wf4_portfolio_rebalancing_prod_weekly",
     workflow=portfolio_rebalancing_workflow,
