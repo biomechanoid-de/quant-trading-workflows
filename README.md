@@ -16,19 +16,19 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
  |  WF1: Data Ingestion           (daily, 06:00 UTC)        [Phase 1]  |
  |   +-> Fetch prices -> Validate -> Store to DB -> Quality check      |
  |                                                                      |
- |  WF2: Universe & Screening     (weekly, Mon 07:00 UTC)   [Phase 2]  |
+ |  WF2: Universe & Screening     (daily, 07:00 UTC)        [Phase 2]  |
  |   +-> Load prices -> Metrics -> Cluster + Score -> Report           |
  |                                                                      |
- |  WF3: Signal & Analysis        (weekly, Mon 08:00 UTC)   [Phase 2]  |
+ |  WF3: Signal & Analysis        (daily, 08:00 UTC)        [Phase 2]  |
  |   +-> Load WF2 context -> Technical + Fundamentals (parallel)       |
  |   +-> Combine signals -> Store + Report                             |
  |                                                                      |
- |  WF4: Portfolio & Rebalancing  (weekly, Mon 09:00 UTC)    [Phase 3]  |
+ |  WF4: Portfolio & Rebalancing  (daily, 09:00 UTC)         [Phase 4]  |
  |   +-> Target weights -> Transaction costs -> Order report           |
- |   +-> Paper trading -> Portfolio snapshot (optional, Phase 4)       |
+ |   +-> Paper trading -> Portfolio snapshot                           |
  |                                                                      |
- |  WF5: Monitoring & Reporting   (daily, 18:00 UTC)         [Phase 5]  |
- |   +-> P&L -> Risk metrics -> Grafana dashboard -> Alerts           |
+ |  WF5: Monitoring & Reporting   (daily, 10:00 UTC)        [Phase 5]  |
+ |   +-> P&L -> Risk metrics -> Alerts -> Markdown report             |
  |                                                                      |
  +----------------------------------------------------------------------+
 ```
@@ -43,7 +43,7 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
 | Raspberry Pi 4 | pi4-worker1 | 192.168.178.37 | K3s Agent (Workflows) | 8 GB | 64 GB SD |
 | Raspberry Pi 4 | pi4-worker2 | 192.168.178.40 | K3s Agent (Workflows) | 8 GB | 64 GB SD |
 | Raspberry Pi 4 | pi4-worker3 | 192.168.178.42 | K3s Agent (Workflows) | 8 GB | 64 GB SD |
-| Raspberry Pi 5 | pi5-ai | 192.168.178.61 | K3s Agent (Hailo-10H NPU) | 16 GB | SD |
+| Raspberry Pi 5 | pi5-ai | 192.168.178.33 | K3s Agent (Hailo-10H NPU) | 16 GB | SD |
 | Raspberry Pi 5 | pi5-1tb | 192.168.178.45 | K3s Agent (PostgreSQL + MinIO) | 16 GB | 64 GB SD + 1 TB NVMe SSD |
 
 **Services:** Flyte v1.16.3 | PostgreSQL | MinIO | Prometheus + Grafana | GitHub Actions CI/CD
@@ -59,12 +59,12 @@ quant-trading-workflows/
 +-- Makefile                           # Build, test, deploy commands
 +-- pyproject.toml                     # Dependencies & project config
 +-- sql/
-|   +-- schema.sql                     # PostgreSQL schema (10 tables)
+|   +-- schema.sql                     # PostgreSQL schema (11 tables)
 +-- src/
 |   +-- shared/                        # Shared across all workflows
 |   |   +-- models.py                  # Data models (11 dataclasses)
-|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2/WF3 params
-|   |   +-- db.py                      # PostgreSQL helpers (store, query, screening, signals)
+|   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2-WF5 params
+|   |   +-- db.py                      # PostgreSQL helpers (store, query, screening, signals, monitoring)
 |   |   +-- analytics.py              # 21 pure functions (RSI, SMA, MACD, Bollinger, cost breakdown, ...)
 |   |   +-- storage.py                # MinIO/S3 Parquet storage
 |   |   +-- providers/
@@ -82,11 +82,13 @@ quant-trading-workflows/
 |   +-- wf4_portfolio_rebalancing/     # Phase 3+4: IMPLEMENTED (10 tasks + 2 paper trading)
 |   |   +-- tasks.py                   # resolve, load, weights, prices, orders, paper trade, snapshot
 |   |   +-- workflow.py                # portfolio_rebalancing_workflow
-|   +-- wf5_monitoring/                # Phase 5: stub
+|   +-- wf5_monitoring/                # Phase 5: IMPLEMENTED
+|   |   +-- tasks.py                   # 4 tasks: pnl, risk_metrics, alerts, report
+|   |   +-- workflow.py                # monitoring_workflow
 +-- launch_plans/
 |   +-- development.py                 # No schedules (all dev runs manual)
-|   +-- production.py                  # WF1 daily + WF2/WF3/WF4 weekly
-+-- tests/                             # 224 unit tests (no network/DB required)
+|   +-- production.py                  # WF1-WF5 all daily schedules
++-- tests/                             # 264 unit tests (no network/DB required)
 +-- scripts/
     +-- run_local.sh                   # Local WF1 testing
 ```
@@ -150,7 +152,7 @@ Switching data providers is a **1-line change** in `wf1_data_ingestion/tasks.py`
 
 ## Phase 2: Universe & Screening (WF2)
 
-Multi-factor stock screening workflow across 49 stocks spanning all 11 GICS sectors. Runs weekly on Sundays to rank the investable universe.
+Multi-factor stock screening workflow across 49 stocks spanning all 11 GICS sectors. Runs daily to rank the investable universe.
 
 ### Pipeline (9 Tasks, Parallel DAG)
 
@@ -306,9 +308,133 @@ Technical Score = SMA (40%) + MACD (35%) + Bollinger (25%)
 
 ---
 
+## Phase 3+4: Portfolio & Rebalancing (WF4)
+
+Computes target portfolio weights from WF3 signals, generates trade orders with full transaction cost modeling, and executes paper trades to track simulated portfolio performance.
+
+### Pipeline (12 Tasks)
+
+```
+resolve_run_date --> load_signal_context --> load_current_portfolio --> calculate_target_weights
+                                                                            |
+                                                                            v
+                                                                    fetch_current_prices
+                                                                            |
+                                                                            v
+                                                                    generate_trade_orders
+                                                                            |
+                                                                            v
+                                                                    assemble_rebalancing_result
+                                                                            |
+                                                  +-------------------------+-------------------------+
+                                                  v                         v                         v
+                                          store_to_db              store_to_parquet          generate_order_report
+                                                                                                      |
+                                                                                                      v
+                                                                                            execute_paper_trades
+                                                                                                      |
+                                                                                                      v
+                                                                                            snapshot_portfolio
+```
+
+### Pension Fund Allocation Model
+
+Signal-weighted allocation inspired by the Norwegian Government Pension Fund:
+
+| Signal | Weight Multiplier |
+|--------|-------------------|
+| Strong Buy | 3x base weight |
+| Buy | 2x base weight |
+| Hold | 0 (no allocation) |
+| Sell | 0 (no allocation) |
+| Strong Sell | 0 (no allocation) |
+
+**Constraints:** Max 5% per stock, 25% per sector, 5% cash reserve.
+
+### Transaction Cost Model (Brenndoerfer)
+
+Every trade is evaluated against its full cost before execution:
+
+| Component | Default |
+|-----------|---------|
+| Commission | $0.005/share |
+| Spread | 5 bps |
+| Exchange Fee | 3 bps |
+| Market Impact | 0.1 bps per $1,000 |
+
+Minimum trade value filter: EUR 100 (skips uneconomical small trades).
+
+### Paper Trading
+
+Paper trading is **enabled by default** (`WF4_PAPER_TRADING_ENABLED=true`). When enabled:
+
+- `execute_paper_trades` simulates order execution, updates the `positions` table with weighted average cost tracking
+- `snapshot_portfolio` takes a daily portfolio snapshot for performance tracking
+- Cash tracking via `portfolio_snapshots` table (latest snapshot's cash = source of truth)
+- Initial capital: EUR 25,000 (configurable via `WF4_INITIAL_CAPITAL`)
+
+### Dual-Write Output
+
+- **PostgreSQL:** `rebalancing_runs` (metadata), `positions` (current holdings), `trades` (executed orders), `portfolio_snapshots` (daily NAV)
+- **MinIO Parquet:** `s3://quant-data/rebalancing/year=YYYY/month=MM/day=DD/{target_weights,trade_orders}.parquet`
+- **Order Report:** `s3://quant-data/reports/wf4/year=YYYY/month=MM/day=DD/`
+
+---
+
+## Phase 5: Monitoring & Reporting (WF5)
+
+Core monitoring workflow that computes P&L, risk metrics, checks alert thresholds, and generates a comprehensive markdown report.
+
+### Pipeline (4 Tasks)
+
+```
+calculate_pnl --> compute_risk_metrics --> check_alerts --> generate_monitoring_report
+ (300m/256Mi)      (300m/256Mi)           (200m/128Mi)       (200m/256Mi)
+```
+
+### P&L Calculation
+
+| Metric | Source |
+|--------|--------|
+| Daily P&L | Latest vs. previous portfolio snapshot |
+| MTD P&L | Current vs. first-of-month snapshot |
+| YTD P&L | Current vs. first-of-year snapshot |
+| Unrealized P&L | Per-position: (current_price - avg_cost) * shares |
+
+### Risk Metrics (30-Day Window)
+
+| Metric | Method |
+|--------|--------|
+| Sharpe Ratio | Annualized excess return / volatility (rf=5%) |
+| Sortino Ratio | Annualized excess return / downside deviation |
+| Max Drawdown | Maximum peak-to-trough decline |
+| VaR (95%) | Historical 5th percentile of daily P&L |
+
+Reuses existing analytics functions: `compute_sharpe()`, `compute_sortino()`, `compute_max_drawdown()` from `shared/analytics.py`.
+
+### Alert System
+
+| Alert Type | Default Threshold |
+|------------|-------------------|
+| Drawdown | > 5% (30-day) |
+| Position Concentration | > 7% (single stock) |
+| VaR Breach | > 3% of portfolio |
+| Unrealized Loss | > 10% (single position) |
+
+All thresholds are configurable via environment variables (`WF5_DRAWDOWN_ALERT_PCT`, etc.).
+
+### Output
+
+- **PostgreSQL:** `monitoring_runs` table with UPSERT on run_date (idempotent)
+- **MinIO:** `s3://quant-data/reports/wf5/year=YYYY/month=MM/day=DD/monitoring_report.md`
+- **Report:** Markdown with sections: Summary, P&L, Winners/Losers, Risk, Sectors, Alerts
+- DB and MinIO failures are non-fatal (report is still returned as workflow output)
+
+---
+
 ## Database Schema
 
-PostgreSQL on pi5-1tb (64 GB SD card; MinIO on 1 TB NVMe SSD). Ten tables:
+PostgreSQL on pi5-1tb (64 GB SD card; MinIO on 1 TB NVMe SSD). Eleven tables:
 
 | Table | Workflow | Purpose |
 |-------|----------|---------|
@@ -322,6 +448,7 @@ PostgreSQL on pi5-1tb (64 GB SD card; MinIO on 1 TB NVMe SSD). Ten tables:
 | `trades` | WF4 | Executed trades with cost breakdown |
 | `dividends` | WF4 | Dividend tracking and reinvestment |
 | `portfolio_snapshots` | WF4/WF5 | Portfolio value snapshots for performance tracking |
+| `monitoring_runs` | WF5 | Monitoring run metadata, P&L, risk metrics, alerts |
 
 Initialize: `make init-db` or `psql -f sql/schema.sql`
 
@@ -387,9 +514,10 @@ Schedules are controlled exclusively via two files:
 | File | Domain | Content |
 |------|--------|---------|
 | `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` -- Cron `0 6 * * *` (daily 06:00 UTC) |
-| `launch_plans/production.py` | production | `wf2_universe_screening_prod_weekly` -- Cron `0 7 * * 1` (Monday 07:00 UTC) |
-| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_weekly` -- Cron `0 8 * * 1` (Monday 08:00 UTC) |
-| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_weekly` -- Cron `0 9 * * 1` (Monday 09:00 UTC) |
+| `launch_plans/production.py` | production | `wf2_universe_screening_prod_daily` -- Cron `0 7 * * *` (daily 07:00 UTC) |
+| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_daily` -- Cron `0 8 * * *` (daily 08:00 UTC) |
+| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_daily` -- Cron `0 9 * * *` (daily 09:00 UTC) |
+| `launch_plans/production.py` | production | `wf5_monitoring_prod_daily` -- Cron `0 10 * * *` (daily 10:00 UTC) |
 | `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
@@ -398,8 +526,8 @@ CI/CD explicitly activates only named cron launch plans (not `--activate-launchp
 
 ## Design Decisions
 
-### 1. No Live Trading
-The system generates **order reports**, not automatic trades. You decide whether and how to execute. Like the Norwegian Pension Fund's investment committee.
+### 1. Paper Trading Only (No Live Execution)
+The system runs **simulated trades** via paper trading, tracking a model portfolio with full transaction cost modeling. No real broker connections. You decide whether and how to execute real trades. Like the Norwegian Pension Fund's investment committee.
 
 ### 2. Dividends + Long-Term Growth
 Pension fund model: broad diversification, low costs, regular dividend income as the primary return source.
@@ -423,32 +551,33 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 
 ## Roadmap
 
-| Phase | Weeks | Goal | Workflows |
-|-------|-------|------|-----------|
-| **1. Foundation** | 1-2 | Data flows, DB schema, WF1 runs on cluster | WF1 |
-| **2. Analysis** | 3-4 | Stocks screened and scored | WF2, WF3 (tech+fund) |
-| **3. Portfolio** | 5-6 | System proposes trades, tracks model portfolio | WF4 |
-| **4. Intelligence** | 7-8 | Hailo NPU sentiment, backtesting | WF3 (sentiment) |
-| **5. Production** | 9-10 | Full system autonomous, monitoring complete | WF5 |
-| **6. Data Provider** | 10+ | Choose paid provider based on experience | All |
+| Phase | Weeks | Goal | Workflows | Status |
+|-------|-------|------|-----------|--------|
+| **1. Foundation** | 1-2 | Data flows, DB schema, WF1 runs on cluster | WF1 | Complete |
+| **2. Analysis** | 3-4 | Stocks screened and scored | WF2, WF3 (tech+fund) | Complete |
+| **3. Portfolio** | 5-6 | System proposes trades, tracks model portfolio | WF4 | Complete |
+| **4. Paper Trading** | 7-8 | Simulated trade execution, portfolio tracking | WF4 (paper trading) | Complete |
+| **5. Monitoring** | 9-10 | Full system autonomous, monitoring complete | WF5 | Complete |
+| **6. Intelligence** | TBD | Hailo NPU sentiment, backtesting | WF3 (sentiment) | Planned |
+| **7. Data Provider** | TBD | Choose paid provider based on experience | All | Planned |
 
 ---
 
-## Current Status (Phase 4 Complete)
+## Current Status (Phase 5 Complete)
 
 | Component | Status |
 |-----------|--------|
-| WF1: Data Ingestion (5 tasks, dual-write) | Running daily at 06:00 UTC |
-| WF2: Universe & Screening (9 tasks, parallel DAG) | Running weekly Mon 07:00 UTC |
-| WF3: Signal & Analysis (8 tasks, parallel DAG) | Running weekly Mon 08:00 UTC |
-| WF4: Portfolio & Rebalancing (12 tasks, order reports + paper trading) | Running weekly Mon 09:00 UTC |
-| WF5: Monitoring Stub | Registered, ready for Phase 5 |
+| WF1: Data Ingestion (5 tasks, dual-write) | LIVE -- daily at 06:00 UTC |
+| WF2: Universe & Screening (9 tasks, parallel DAG) | LIVE -- daily at 07:00 UTC |
+| WF3: Signal & Analysis (8 tasks, parallel DAG) | LIVE -- daily at 08:00 UTC |
+| WF4: Portfolio & Rebalancing (12 tasks, paper trading) | LIVE -- daily at 09:00 UTC |
+| WF5: Monitoring & Reporting (4 tasks, P&L + risk + alerts) | LIVE -- daily at 10:00 UTC |
 | Historical Backfill | Full 2025 (250 trading days, 2,475 rows) + 2026 YTD |
 | CI/CD Pipeline | 30+ successful runs |
-| Launch Plan Management | 4 active launch plans (WF1 daily + WF2/WF3/WF4 weekly) |
+| Launch Plan Management | 5 active launch plans (all daily) |
 | Flyte Domains | Only development + production (staging removed) |
-| Unit Tests | 224 tests, 90% coverage |
-| Paper Trading | Code deployed, toggle disabled (WF4_PAPER_TRADING_ENABLED=false) |
+| Unit Tests | 264 tests, 90% coverage |
+| Paper Trading | Enabled (WF4_PAPER_TRADING_ENABLED=true since 15.02.2026) |
 | Storage Architecture | PostgreSQL on SD card, MinIO on NVMe SSD (pi5-1tb split) |
 
 ## Related Repositories
@@ -467,8 +596,8 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 | WF2: Universe Screening | Pi 4 Workers | 100-500m | 128-512Mi | CPU-bound (analytics, K-Means) |
 | WF3: Signal (Tech+Fund) | Pi 4 Workers | 100-500m | 128Mi-1Gi | CPU-bound (indicators) + I/O (yfinance) |
 | WF3: Sentiment (Phase 4) | **Pi 5 AI (Hailo)** | TBD | TBD | NPU for ML inference |
-| WF4: Portfolio | Pi 4 Workers | TBD | TBD | CPU-bound, moderate |
-| WF5: Monitoring | Pi 4 Workers | TBD | TBD | Lightweight |
+| WF4: Portfolio | Pi 4 Workers | 100-500m | 128Mi-512Mi | CPU-bound (optimization) + I/O (prices) |
+| WF5: Monitoring | Pi 4 Workers | 100-300m | 128Mi-256Mi | Lightweight (DB reads + report gen) |
 
 Flyte domains (staging permanently removed):
 - `quant-trading-development`: 2 CPU, 2 Gi, 10 pods max
