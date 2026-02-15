@@ -23,8 +23,9 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
  |   +-> Load WF2 context -> Technical + Fundamentals (parallel)       |
  |   +-> Combine signals -> Store + Report                             |
  |                                                                      |
- |  WF4: Portfolio & Rebalancing  (monthly, 1st Monday)      [Phase 3]  |
+ |  WF4: Portfolio & Rebalancing  (weekly, Sun 16:00 UTC)    [Phase 3]  |
  |   +-> Target weights -> Transaction costs -> Order report           |
+ |   +-> Paper trading -> Portfolio snapshot (optional, Phase 4)       |
  |                                                                      |
  |  WF5: Monitoring & Reporting   (daily, 18:00 UTC)         [Phase 5]  |
  |   +-> P&L -> Risk metrics -> Grafana dashboard -> Alerts           |
@@ -43,7 +44,7 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
 | Raspberry Pi 4 | pi4-worker2 | 192.168.178.40 | K3s Agent (Workflows) | 8 GB | 64 GB SD |
 | Raspberry Pi 4 | pi4-worker3 | 192.168.178.42 | K3s Agent (Workflows) | 8 GB | 64 GB SD |
 | Raspberry Pi 5 | pi5-ai | 192.168.178.61 | K3s Agent (Hailo-10H NPU) | 16 GB | SD |
-| Raspberry Pi 5 | pi5-1tb | 192.168.178.45 | K3s Agent (PostgreSQL + MinIO) | 16 GB | 1 TB NVMe SSD |
+| Raspberry Pi 5 | pi5-1tb | 192.168.178.45 | K3s Agent (PostgreSQL + MinIO) | 16 GB | 64 GB SD + 1 TB NVMe SSD |
 
 **Services:** Flyte v1.16.3 | PostgreSQL | MinIO | Prometheus + Grafana | GitHub Actions CI/CD
 
@@ -58,13 +59,13 @@ quant-trading-workflows/
 +-- Makefile                           # Build, test, deploy commands
 +-- pyproject.toml                     # Dependencies & project config
 +-- sql/
-|   +-- schema.sql                     # PostgreSQL schema (9 tables)
+|   +-- schema.sql                     # PostgreSQL schema (10 tables)
 +-- src/
 |   +-- shared/                        # Shared across all workflows
 |   |   +-- models.py                  # Data models (11 dataclasses)
 |   |   +-- config.py                  # Symbols, DB config, MinIO config, WF2/WF3 params
 |   |   +-- db.py                      # PostgreSQL helpers (store, query, screening, signals)
-|   |   +-- analytics.py              # 20 pure functions (RSI, SMA, MACD, Bollinger, ...)
+|   |   +-- analytics.py              # 21 pure functions (RSI, SMA, MACD, Bollinger, cost breakdown, ...)
 |   |   +-- storage.py                # MinIO/S3 Parquet storage
 |   |   +-- providers/
 |   |       +-- base.py                # DataProvider ABC (pluggable)
@@ -78,12 +79,14 @@ quant-trading-workflows/
 |   +-- wf3_signal_analysis/           # Phase 2: IMPLEMENTED
 |   |   +-- tasks.py                   # 8 tasks: load, tech, fund, combine, assemble, store, report
 |   |   +-- workflow.py                # signal_analysis_workflow
-|   +-- wf4_portfolio_rebalancing/     # Phase 3: stub
+|   +-- wf4_portfolio_rebalancing/     # Phase 3+4: IMPLEMENTED (10 tasks + 2 paper trading)
+|   |   +-- tasks.py                   # resolve, load, weights, prices, orders, paper trade, snapshot
+|   |   +-- workflow.py                # portfolio_rebalancing_workflow
 |   +-- wf5_monitoring/                # Phase 5: stub
 +-- launch_plans/
 |   +-- development.py                 # No schedules (all dev runs manual)
-|   +-- production.py                  # WF1 daily + WF2 weekly + WF3 weekly
-+-- tests/                             # 165 unit tests (no network/DB required)
+|   +-- production.py                  # WF1 daily + WF2/WF3/WF4 weekly
++-- tests/                             # 224 unit tests (no network/DB required)
 +-- scripts/
     +-- run_local.sh                   # Local WF1 testing
 ```
@@ -305,7 +308,7 @@ Technical Score = SMA (40%) + MACD (35%) + Bollinger (25%)
 
 ## Database Schema
 
-PostgreSQL on pi5-1tb (NVMe SSD). Nine tables:
+PostgreSQL on pi5-1tb (64 GB SD card; MinIO on 1 TB NVMe SSD). Ten tables:
 
 | Table | Workflow | Purpose |
 |-------|----------|---------|
@@ -314,10 +317,11 @@ PostgreSQL on pi5-1tb (NVMe SSD). Nine tables:
 | `screening_results` | WF2 | Per-symbol metrics, scores, quintiles, clusters |
 | `signal_runs` | WF3 | Signal analysis run metadata |
 | `signal_results` | WF3 | Per-symbol technical + fundamental + combined signals |
-| `positions` | WF4 | Current portfolio positions |
+| `rebalancing_runs` | WF4 | Rebalancing run metadata and order summaries |
+| `positions` | WF4 | Current portfolio positions (paper trading) |
 | `trades` | WF4 | Executed trades with cost breakdown |
 | `dividends` | WF4 | Dividend tracking and reinvestment |
-| `portfolio_snapshots` | WF5 | Daily portfolio value snapshots |
+| `portfolio_snapshots` | WF4/WF5 | Portfolio value snapshots for performance tracking |
 
 Initialize: `make init-db` or `psql -f sql/schema.sql`
 
@@ -385,6 +389,7 @@ Schedules are controlled exclusively via two files:
 | `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` -- Cron `0 6 * * *` (daily 06:00 UTC) |
 | `launch_plans/production.py` | production | `wf2_universe_screening_prod_weekly` -- Cron `0 8 * * 0` (Sunday 08:00 UTC) |
 | `launch_plans/production.py` | production | `wf3_signal_analysis_prod_weekly` -- Cron `0 12 * * 0` (Sunday 12:00 UTC) |
+| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_weekly` -- Cron `0 16 * * 0` (Sunday 16:00 UTC) |
 | `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
@@ -429,26 +434,28 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 
 ---
 
-## Current Status (Phase 2 Complete)
+## Current Status (Phase 4 Complete)
 
 | Component | Status |
 |-----------|--------|
 | WF1: Data Ingestion (5 tasks, dual-write) | Running daily at 06:00 UTC |
 | WF2: Universe & Screening (9 tasks, parallel DAG) | Running weekly Sun 08:00 UTC |
 | WF3: Signal & Analysis (8 tasks, parallel DAG) | Running weekly Sun 12:00 UTC |
-| WF4-WF5 Stubs | Registered, ready for Phase 3-5 |
+| WF4: Portfolio & Rebalancing (12 tasks, order reports + paper trading) | Running weekly Sun 16:00 UTC |
+| WF5: Monitoring Stub | Registered, ready for Phase 5 |
 | Historical Backfill | Full 2025 (250 trading days, 2,475 rows) + 2026 YTD |
-| CI/CD Pipeline | 20+ successful runs |
-| Launch Plan Management | 3 active launch plans (WF1 daily + WF2 weekly + WF3 weekly) |
+| CI/CD Pipeline | 30+ successful runs |
+| Launch Plan Management | 4 active launch plans (WF1 daily + WF2/WF3/WF4 weekly) |
 | Flyte Domains | Only development + production (staging removed) |
-| Unit Tests | 165 tests, 90% coverage |
+| Unit Tests | 224 tests, 90% coverage |
+| Paper Trading | Code deployed, toggle disabled (WF4_PAPER_TRADING_ENABLED=false) |
+| Storage Architecture | PostgreSQL on SD card, MinIO on NVMe SSD (pi5-1tb split) |
 
 ## Related Repositories
 
 | Repository | Purpose |
 |------------|---------|
 | [cluster-infra](https://github.com/biomechanoid-de/cluster-infra) | Terraform: K8s namespaces, secrets, quotas |
-| [flyte-workflow-template](https://github.com/biomechanoid-de/flyte-workflow-template) | Base template for Flyte workflows on Pi cluster |
 
 ---
 
