@@ -3,7 +3,7 @@
 Weekly workflow that computes technical indicators and fundamental analysis
 for WF2's top-ranked stocks, generating composite buy/hold/sell signals.
 
-Schedule: Weekly Sunday 12:00 UTC (4 hours after WF2)
+Schedule: Weekly Monday 08:00 UTC (1 hour after WF2)
 
 Pipeline:
     load_screening_context

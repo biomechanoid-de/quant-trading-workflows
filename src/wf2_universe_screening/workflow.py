@@ -8,7 +8,7 @@ Weekly pipeline that screens stocks via multi-factor model:
 5. Assemble final ScreeningResult with benchmark performance
 6. In parallel: Store to DB + Store to Parquet + Generate report
 
-Schedule: Weekly Sunday 08:00 UTC (configured in launch_plans/)
+Schedule: Weekly Monday 07:00 UTC (configured in launch_plans/)
 
 Task DAG:
     load_historical_prices -> compute_returns_and_metrics -> +- cluster_stocks        -+
