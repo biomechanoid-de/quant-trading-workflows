@@ -30,7 +30,7 @@ Flyte-orchestrated quantitative trading system running on a Raspberry Pi K3s clu
  |  WF5: Monitoring & Reporting   (daily, 10:00 UTC)        [Phase 5]  |
  |   +-> P&L -> Risk metrics -> Alerts -> Markdown report             |
  |                                                                      |
- |  WF6: Backtesting              (weekly Sun, 11:00 UTC)   [Phase 6]  |
+ |  WF6: Backtesting              (daily, 11:00 UTC)        [Phase 6]  |
  |   +-> Load signals -> Simulate portfolio vs benchmark -> Report     |
  |                                                                      |
  +----------------------------------------------------------------------+
@@ -99,7 +99,7 @@ quant-trading-workflows/
 |   |   +-- workflow.py                # backtesting_workflow
 +-- launch_plans/
 |   +-- development.py                 # No schedules (all dev runs manual)
-|   +-- production.py                  # WF1-WF5 daily + WF6 weekly schedules
+|   +-- production.py                  # WF1-WF6 daily schedules
 +-- scripts/
 |   +-- run_local.sh                   # Local WF1 testing
 |   +-- export_sentiment_model.py      # One-time: export DistilRoBERTa to ONNX INT8
@@ -587,12 +587,12 @@ Schedules are controlled exclusively via two files:
 
 | File | Domain | Content |
 |------|--------|---------|
-| `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` -- Cron `0 6 * * *` (daily 06:00 UTC) |
-| `launch_plans/production.py` | production | `wf2_universe_screening_prod_daily` -- Cron `0 7 * * *` (daily 07:00 UTC) |
-| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_daily` -- Cron `0 8 * * *` (daily 08:00 UTC) |
-| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_daily` -- Cron `0 9 * * *` (daily 09:00 UTC) |
-| `launch_plans/production.py` | production | `wf5_monitoring_prod_daily` -- Cron `0 10 * * *` (daily 10:00 UTC) |
-| `launch_plans/production.py` | production | `wf6_backtesting_prod_weekly` -- Cron `0 11 * * 0` (Sunday 11:00 UTC) |
+| `launch_plans/production.py` | production | `wf1_data_ingestion_prod_daily` — Cron `0 6 * * *` (daily 06:00 UTC) |
+| `launch_plans/production.py` | production | `wf2_universe_screening_prod_daily` — Cron `0 7 * * *` (daily 07:00 UTC) |
+| `launch_plans/production.py` | production | `wf3_signal_analysis_prod_daily` — Cron `0 8 * * *` (daily 08:00 UTC) |
+| `launch_plans/production.py` | production | `wf4_portfolio_rebalancing_prod_daily` — Cron `0 9 * * *` (daily 09:00 UTC) |
+| `launch_plans/production.py` | production | `wf5_monitoring_prod_daily` — Cron `0 10 * * *` (daily 10:00 UTC) |
+| `launch_plans/production.py` | production | `wf6_backtesting_prod_daily` -- Cron `0 11 * * *` (daily 11:00 UTC) |
 | `launch_plans/development.py` | development | Empty -- all dev runs are triggered manually |
 
 CI/CD explicitly activates only named cron launch plans (not `--activate-launchplans` which would activate all). To add a new schedule: define it in the appropriate launch plan file and add an activation step in `deploy.yml`.
@@ -647,10 +647,10 @@ Complex types (`List[List]`, `Dict[str, List]`, dataclasses with `List`/`Dict` f
 | WF3: Signal & Analysis (9 tasks, 3-branch parallel DAG) | LIVE -- daily at 08:00 UTC (30/40/30 tech+fund+sent) |
 | WF4: Portfolio & Rebalancing (12 tasks, paper trading) | LIVE -- daily at 09:00 UTC |
 | WF5: Monitoring & Reporting (4 tasks, P&L + risk + alerts) | LIVE -- daily at 10:00 UTC |
-| WF6: Backtesting (6 tasks, strategy vs benchmark) | LIVE -- weekly Sunday 11:00 UTC |
+| WF6: Backtesting (6 tasks, strategy vs benchmark) | LIVE -- daily at 11:00 UTC |
 | Historical Backfill | Full 2025 (250 trading days, 2,475 rows) + 2026 YTD |
 | CI/CD Pipeline | 30+ successful runs |
-| Launch Plan Management | 6 active launch plans (5 daily + 1 weekly) |
+| Launch Plan Management | 6 active launch plans (all daily) |
 | Flyte Domains | Only development + production (staging removed) |
 | Unit Tests | 347 tests, 90% coverage |
 | Paper Trading | Enabled (WF4_PAPER_TRADING_ENABLED=true since 15.02.2026) |

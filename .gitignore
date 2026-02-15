@@ -17,4 +17,4 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
-models/
+envs/
