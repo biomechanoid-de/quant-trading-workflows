@@ -281,26 +281,31 @@ def sample_wf4_signal_context():
             "combined_signal_score": 72.5, "signal_strength": "buy",
             "wf2_quintile": 1, "technical_score": 68.0,
             "fundamental_score": 77.0, "data_quality": "complete",
+            "sentiment_score": 65.0, "sentiment_signal": "positive",
         }),
         "MSFT": json.dumps({
             "combined_signal_score": 76.0, "signal_strength": "strong_buy",
             "wf2_quintile": 1, "technical_score": 72.0,
             "fundamental_score": 80.0, "data_quality": "complete",
+            "sentiment_score": 70.0, "sentiment_signal": "positive",
         }),
         "NVDA": json.dumps({
             "combined_signal_score": 65.5, "signal_strength": "buy",
             "wf2_quintile": 1, "technical_score": 70.0,
             "fundamental_score": 61.0, "data_quality": "complete",
+            "sentiment_score": 55.0, "sentiment_signal": "neutral",
         }),
         "AMZN": json.dumps({
             "combined_signal_score": 45.0, "signal_strength": "hold",
             "wf2_quintile": 2, "technical_score": 40.0,
             "fundamental_score": 50.0, "data_quality": "partial",
+            "sentiment_score": 40.0, "sentiment_signal": "negative",
         }),
         "JPM": json.dumps({
             "combined_signal_score": 62.0, "signal_strength": "buy",
             "wf2_quintile": 2, "technical_score": 58.0,
             "fundamental_score": 66.0, "data_quality": "complete",
+            "sentiment_score": 60.0, "sentiment_signal": "positive",
         }),
     }
 
