@@ -4,7 +4,7 @@ Runs quantized DistilRoBERTa-Finance model on ARM64 CPU.
 Expected inference: ~50-100ms per headline on Pi 5.
 
 Model files expected in model_dir:
-    - model.onnx (quantized INT8)
+    - model_quantized.onnx (INT8, preferred) or model.onnx (FP32 fallback)
     - tokenizer_config.json
     - vocab.txt or sentencepiece.bpe.model
     - special_tokens_map.json
@@ -39,8 +39,13 @@ class OnnxCpuClassifier(SentimentClassifier):
         from transformers import AutoTokenizer
 
         self._tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        # Quantized model is exported as model_quantized.onnx by optimum
+        model_path = os.path.join(model_dir, "model_quantized.onnx")
+        if not os.path.exists(model_path):
+            # Fall back to model.onnx for non-quantized exports
+            model_path = os.path.join(model_dir, "model.onnx")
         self._session = ort.InferenceSession(
-            os.path.join(model_dir, "model.onnx"),
+            model_path,
             providers=["CPUExecutionProvider"],
         )
 
