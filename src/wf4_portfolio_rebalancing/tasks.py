@@ -92,7 +92,8 @@ def load_signal_context(run_date: str) -> Dict[str, str]:
     Returns:
         Dict mapping symbol -> JSON string with keys:
         combined_signal_score, signal_strength, wf2_quintile,
-        technical_score, fundamental_score, data_quality.
+        technical_score, fundamental_score, data_quality,
+        sentiment_score, sentiment_signal.
     """
     import json
     from src.shared.db import get_latest_signal_results
@@ -100,7 +101,7 @@ def load_signal_context(run_date: str) -> Dict[str, str]:
     rows = get_latest_signal_results(run_date)
     result = {}
     for row in rows:
-        symbol, combined_score, strength, quintile, tech, fund, quality = row
+        symbol, combined_score, strength, quintile, tech, fund, quality, sent_score, sent_signal = row
         result[symbol] = json.dumps({
             "combined_signal_score": float(combined_score) if combined_score else 50.0,
             "signal_strength": strength or "hold",
@@ -108,6 +109,8 @@ def load_signal_context(run_date: str) -> Dict[str, str]:
             "technical_score": float(tech) if tech else 50.0,
             "fundamental_score": float(fund) if fund else 50.0,
             "data_quality": quality or "minimal",
+            "sentiment_score": float(sent_score) if sent_score else 50.0,
+            "sentiment_signal": sent_signal or "neutral",
         })
 
     return result
