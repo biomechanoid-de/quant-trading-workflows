@@ -1,3 +1,33 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:2012e7b3f7d4d5d9a8b18682b3e5ec647fe60f15e0ccd1ed62eb247f3b8b8cf7
-size 763
+{
+  "one_external_file": true,
+  "opset": null,
+  "optimization": {},
+  "quantization": {
+    "activations_dtype": "QUInt8",
+    "activations_symmetric": false,
+    "format": "QOperator",
+    "is_static": false,
+    "mode": "IntegerOps",
+    "nodes_to_exclude": [],
+    "nodes_to_quantize": [],
+    "operators_to_quantize": [
+      "Conv",
+      "MatMul",
+      "Attention",
+      "LSTM",
+      "Gather",
+      "Transpose",
+      "EmbedLayerNormalization"
+    ],
+    "per_channel": false,
+    "qdq_add_pair_to_weight": false,
+    "qdq_dedicated_pair": false,
+    "qdq_op_type_per_channel_support_to_axis": {
+      "MatMul": 1
+    },
+    "reduce_range": false,
+    "weights_dtype": "QInt8",
+    "weights_symmetric": true
+  },
+  "use_external_data_format": false
+}
