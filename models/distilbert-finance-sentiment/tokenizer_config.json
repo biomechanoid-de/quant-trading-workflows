@@ -1,3 +1,62 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:0581b9b9e72b77a10a824445cfaf530d2fd1ad607d68e5d9726e0a4c186c61fc
-size 1358
+{
+  "add_prefix_space": false,
+  "added_tokens_decoder": {
+    "0": {
+      "content": "<s>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1": {
+      "content": "<pad>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "2": {
+      "content": "</s>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "3": {
+      "content": "<unk>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "50264": {
+      "content": "<mask>",
+      "lstrip": true,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    }
+  },
+  "bos_token": "<s>",
+  "clean_up_tokenization_spaces": false,
+  "cls_token": "<s>",
+  "eos_token": "</s>",
+  "errors": "replace",
+  "extra_special_tokens": {},
+  "mask_token": "<mask>",
+  "max_length": 512,
+  "model_max_length": 512,
+  "pad_token": "<pad>",
+  "sep_token": "</s>",
+  "stride": 0,
+  "tokenizer_class": "RobertaTokenizer",
+  "trim_offsets": true,
+  "truncation_side": "right",
+  "truncation_strategy": "longest_first",
+  "unk_token": "<unk>"
+}
