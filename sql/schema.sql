@@ -291,3 +291,33 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_dates ON backtest_runs(start_date, end_date);
+
+-- ============================================================
+-- Pending Orders (Phase 7: IBKR Bridge Integration)
+-- ============================================================
+-- Trade orders written by WF4 for the IBKR bridge service to execute.
+-- The bridge reads pending orders and executes them via IB Gateway.
+-- Paper trading continues in parallel — this is an additional output.
+CREATE TABLE IF NOT EXISTS pending_orders (
+    id SERIAL PRIMARY KEY,
+    run_date DATE NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    side VARCHAR(4) NOT NULL,              -- BUY/SELL
+    quantity INT NOT NULL,
+    estimated_price DECIMAL(12,4),
+    limit_price DECIMAL(12,4),             -- For limit orders
+    order_type VARCHAR(10) DEFAULT 'LMT',  -- LMT/MKT
+    reason VARCHAR(100),                   -- Rebalance/NewEntry/Exit
+    status VARCHAR(20) DEFAULT 'pending',  -- pending/executed/failed/cancelled
+    fill_price DECIMAL(12,4),
+    fill_time TIMESTAMP,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(run_date, symbol, side)         -- Idempotent: one order per symbol per side per day
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_orders_run_date ON pending_orders(run_date);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_status ON pending_orders(status);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_pending ON pending_orders(status, run_date)
+    WHERE status = 'pending';

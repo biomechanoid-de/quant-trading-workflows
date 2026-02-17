@@ -1020,6 +1020,71 @@ def get_cumulative_dividend_total() -> float:
         conn.close()
 
 
+# ============================================================
+# Phase 7: IBKR Bridge Pending Orders
+# ============================================================
+
+
+def store_pending_orders(run_date: str, orders: list) -> int:
+    """Write trade orders to pending_orders table for IBKR bridge execution.
+
+    Uses UPSERT on (run_date, symbol, side) for idempotency.
+    Each order dict should have keys: symbol, side, quantity,
+    estimated_price, reason.
+
+    Args:
+        run_date: Trade date (YYYY-MM-DD).
+        orders: List of dicts with keys:
+            symbol, side, quantity, estimated_price, reason.
+
+    Returns:
+        Number of orders written.
+    """
+    if not orders:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows_written = 0
+
+    try:
+        for order in orders:
+            cursor.execute(
+                """INSERT INTO pending_orders
+                       (run_date, symbol, side, quantity, estimated_price,
+                        limit_price, order_type, reason, status)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                   ON CONFLICT (run_date, symbol, side) DO UPDATE SET
+                       quantity = EXCLUDED.quantity,
+                       estimated_price = EXCLUDED.estimated_price,
+                       limit_price = EXCLUDED.limit_price,
+                       reason = EXCLUDED.reason,
+                       status = 'pending',
+                       error_message = NULL,
+                       fill_price = NULL,
+                       fill_time = NULL,
+                       updated_at = NOW()""",
+                (
+                    run_date,
+                    order["symbol"],
+                    order["side"],
+                    order["quantity"],
+                    order.get("estimated_price", 0.0),
+                    order.get("estimated_price", 0.0),  # limit_price = estimated_price
+                    order.get("order_type", "LMT"),
+                    order.get("reason", ""),
+                ),
+            )
+            rows_written += 1
+
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    return rows_written
+
+
 def get_dividend_summary(run_date: str) -> dict:
     """Get dividend summary with MTD and YTD totals.
 
