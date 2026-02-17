@@ -146,6 +146,12 @@ WF4_PAPER_TRADING_ENABLED = os.environ.get("WF4_PAPER_TRADING_ENABLED", "true").
 # When True, dividends are reinvested (DRIP) into the paying stock.
 WF4_DIVIDEND_REINVEST = os.environ.get("WF4_DIVIDEND_REINVEST", "false").lower() == "true"
 
+# Phase 7: IBKR Bridge Pending Orders
+# When True (default), WF4 writes trade orders to pending_orders table
+# for the IBKR bridge service to execute. Non-blocking, non-fatal.
+# Paper trading continues in parallel regardless of this setting.
+WF4_WRITE_PENDING_ORDERS = os.environ.get("WF4_WRITE_PENDING_ORDERS", "true").lower() == "true"
+
 # ============================================================
 # WF5: Monitoring & Reporting Defaults
 # ============================================================

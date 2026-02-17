@@ -1201,3 +1201,260 @@ class TestSnapshotPortfolio:
         call_kwargs = mock_store.call_args
         # total_value_after = 24969.50, initial = 25000 → PnL < 0
         assert call_kwargs[1]["daily_pnl"] < 0  # Lost money to costs
+
+
+# ============================================================
+# Phase 7: Pending Orders for IBKR Bridge
+# ============================================================
+
+
+class TestStorePendingOrders:
+    """Test store_pending_orders DB function."""
+
+    def test_store_pending_orders_writes_to_db(self, mocker):
+        """Pending orders should be written via psycopg2 execute + commit."""
+        from src.shared.db import store_pending_orders
+
+        mock_cursor = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mocker.patch("src.shared.db.get_connection", return_value=mock_conn)
+
+        orders = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 6,
+             "estimated_price": 195.0, "reason": "NewEntry"},
+            {"symbol": "MSFT", "side": "BUY", "quantity": 2,
+             "estimated_price": 415.0, "reason": "NewEntry"},
+        ]
+
+        result = store_pending_orders("2026-02-16", orders)
+
+        assert result == 2
+        assert mock_cursor.execute.call_count == 2
+        mock_conn.commit.assert_called_once()
+        mock_cursor.close.assert_called_once()
+        mock_conn.close.assert_called_once()
+
+    def test_store_pending_orders_empty_list(self, mocker):
+        """Empty order list should return 0 without DB call."""
+        from src.shared.db import store_pending_orders
+
+        mock_conn = mocker.MagicMock()
+        mocker.patch("src.shared.db.get_connection", return_value=mock_conn)
+
+        result = store_pending_orders("2026-02-16", [])
+
+        assert result == 0
+        mock_conn.cursor.assert_not_called()
+
+    def test_store_pending_orders_upsert_sql(self, mocker):
+        """SQL should use ON CONFLICT for idempotency."""
+        from src.shared.db import store_pending_orders
+
+        mock_cursor = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mocker.patch("src.shared.db.get_connection", return_value=mock_conn)
+
+        orders = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 6,
+             "estimated_price": 195.0, "reason": "NewEntry"},
+        ]
+
+        store_pending_orders("2026-02-16", orders)
+
+        sql = mock_cursor.execute.call_args_list[0][0][0]
+        assert "ON CONFLICT" in sql
+        assert "run_date, symbol, side" in sql
+        assert "pending_orders" in sql
+
+    def test_store_pending_orders_params(self, mocker):
+        """SQL parameters should match the order data."""
+        from src.shared.db import store_pending_orders
+
+        mock_cursor = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mocker.patch("src.shared.db.get_connection", return_value=mock_conn)
+
+        orders = [
+            {"symbol": "NVDA", "side": "SELL", "quantity": 3,
+             "estimated_price": 850.0, "reason": "Exit"},
+        ]
+
+        store_pending_orders("2026-02-17", orders)
+
+        params = mock_cursor.execute.call_args_list[0][0][1]
+        assert params[0] == "2026-02-17"  # run_date
+        assert params[1] == "NVDA"        # symbol
+        assert params[2] == "SELL"        # side
+        assert params[3] == 3             # quantity
+        assert params[4] == 850.0         # estimated_price
+        assert params[5] == 850.0         # limit_price = estimated_price
+        assert params[6] == "LMT"         # order_type default
+        assert params[7] == "Exit"        # reason
+
+
+class TestPendingOrdersInPaperTrades:
+    """Test that execute_paper_trades writes pending orders for IBKR bridge."""
+
+    def test_pending_orders_written_when_enabled(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """When WF4_WRITE_PENDING_ORDERS=True, pending orders are written."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=3)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=3)
+        mocker.patch(
+            "src.shared.config.WF4_WRITE_PENDING_ORDERS", True,
+        )
+        mock_store_pending = mocker.patch(
+            "src.shared.db.store_pending_orders", return_value=3,
+        )
+
+        result = execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        assert result["status"] == "executed"
+        mock_store_pending.assert_called_once()
+        call_args = mock_store_pending.call_args[0]
+        assert call_args[0] == "2026-02-16"  # run_date
+        assert len(call_args[1]) == 3  # 3 orders
+
+    def test_pending_orders_skipped_when_disabled(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """When WF4_WRITE_PENDING_ORDERS=False, no pending orders written."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=3)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=3)
+        mocker.patch(
+            "src.shared.config.WF4_WRITE_PENDING_ORDERS", False,
+        )
+        mock_store_pending = mocker.patch(
+            "src.shared.db.store_pending_orders", return_value=0,
+        )
+
+        result = execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        assert result["status"] == "executed"
+        mock_store_pending.assert_not_called()
+
+    def test_pending_orders_failure_non_fatal(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """Pending order write failure should not break paper trading."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=3)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=3)
+        mocker.patch(
+            "src.shared.config.WF4_WRITE_PENDING_ORDERS", True,
+        )
+        mocker.patch(
+            "src.shared.db.store_pending_orders",
+            side_effect=Exception("DB connection failed"),
+        )
+
+        # Should NOT raise — failure is caught and logged
+        result = execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        # Paper trading should still complete successfully
+        assert result["status"] == "executed"
+        assert int(result["num_trades_executed"]) == 3
+
+    def test_pending_orders_not_written_when_paper_trading_disabled(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """When paper_trading=False, task returns early — no pending orders."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch(
+            "src.shared.config.WF4_WRITE_PENDING_ORDERS", True,
+        )
+        mock_store_pending = mocker.patch(
+            "src.shared.db.store_pending_orders", return_value=0,
+        )
+
+        result = execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=False,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        assert result["status"] == "disabled"
+        mock_store_pending.assert_not_called()
+
+    def test_pending_orders_contain_correct_fields(
+        self, mocker, sample_assembled_result_for_paper_trading,
+        sample_portfolio_state_empty, sample_wf4_price_data,
+    ):
+        """Each pending order should have symbol, side, quantity, price, reason."""
+        from src.wf4_portfolio_rebalancing.tasks import execute_paper_trades
+
+        mocker.patch("src.shared.db.upsert_positions", return_value=3)
+        mocker.patch("src.shared.db.store_executed_trades", return_value=3)
+        mocker.patch(
+            "src.shared.config.WF4_WRITE_PENDING_ORDERS", True,
+        )
+        mock_store_pending = mocker.patch(
+            "src.shared.db.store_pending_orders", return_value=3,
+        )
+
+        execute_paper_trades(
+            assembled_result=sample_assembled_result_for_paper_trading,
+            portfolio_state=sample_portfolio_state_empty,
+            price_data=sample_wf4_price_data,
+            paper_trading=True,
+            initial_capital=25000.0,
+            commission_per_share=0.005,
+            exchange_fee_bps=3.0,
+            impact_bps_per_1k=0.1,
+        )
+
+        orders = mock_store_pending.call_args[0][1]
+        for order in orders:
+            assert "symbol" in order
+            assert "side" in order
+            assert "quantity" in order
+            assert "estimated_price" in order
+            assert "reason" in order
+            assert isinstance(order["quantity"], int)
+            assert isinstance(order["estimated_price"], float)

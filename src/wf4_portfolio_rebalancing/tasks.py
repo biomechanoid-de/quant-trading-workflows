@@ -971,9 +971,13 @@ def execute_paper_trades(
             "run_date": assembled_result.get("run_date", ""),
         }
 
+    import logging
+
     from src.shared.analytics import calculate_cost_breakdown
     from src.shared.db import upsert_positions, store_executed_trades
-    from src.shared.config import SYMBOL_SECTORS
+    from src.shared.config import SYMBOL_SECTORS, WF4_WRITE_PENDING_ORDERS
+
+    logger = logging.getLogger(__name__)
 
     run_date = assembled_result.get("run_date", "")
     orders = json.loads(assembled_result.get("trade_orders_json", "[]"))
@@ -981,6 +985,27 @@ def execute_paper_trades(
     current_positions = json.loads(
         portfolio_state.get("positions_json", "[]")
     )
+
+    # Phase 7: Write pending orders for IBKR bridge (non-blocking, non-fatal).
+    # Paper trading simulation continues regardless of success/failure here.
+    if WF4_WRITE_PENDING_ORDERS and orders:
+        try:
+            from src.shared.db import store_pending_orders
+
+            pending = [
+                {
+                    "symbol": o["symbol"],
+                    "side": o["side"],
+                    "quantity": int(o["quantity"]),
+                    "estimated_price": float(o.get("estimated_price", 0.0)),
+                    "reason": o.get("reason", ""),
+                }
+                for o in orders
+            ]
+            n_written = store_pending_orders(run_date, pending)
+            logger.info(f"Wrote {n_written} pending orders for IBKR bridge")
+        except Exception as e:
+            logger.warning(f"Failed to write pending orders (non-fatal): {e}")
 
     # Build mutable positions map: symbol -> {shares, avg_cost, ...}
     pos_map = {}
